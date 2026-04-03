@@ -715,6 +715,13 @@ select {
   opacity: 0.75;
 }
 
+.popup-mail-content-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .popup-raw-box span {
   display: block;
   font-size: 10px;
@@ -742,66 +749,76 @@ select {
 
 .popup-raw-box pre {
   margin: 6px 0 0;
-  white-space: pre-wrap;
+  white-space: pre-line;
   word-break: break-word;
   font-size: 11px;
   line-height: 1.55;
   color: inherit;
 }
 
-.popup-html-content {
-  margin-top: 6px;
-  font-size: 12px;
-  line-height: 1.6;
-  word-break: break-word;
-  overflow-wrap: anywhere;
+.popup-view-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid;
+  border-radius: 999px;
 }
 
-.popup-html-content :first-child {
-  margin-top: 0;
+.popup-theme-dark .popup-view-switch {
+  background: rgba(11, 17, 27, 0.88);
+  border-color: rgba(129, 177, 230, 0.12);
 }
 
-.popup-html-content :last-child {
-  margin-bottom: 0;
+.popup-theme-light .popup-view-switch {
+  background: rgba(255, 255, 255, 0.88);
+  border-color: rgba(41, 73, 104, 0.12);
 }
 
-.popup-html-content a {
+.popup-view-switch-button {
+  min-width: 56px;
+  height: 26px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
   color: inherit;
-  text-decoration: underline;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  opacity: 0.74;
 }
 
-.popup-html-content p,
-.popup-html-content div,
-.popup-html-content blockquote,
-.popup-html-content pre,
-.popup-html-content ul,
-.popup-html-content ol,
-.popup-html-content table {
-  margin: 0 0 8px;
+.popup-view-switch-button.is-active {
+  opacity: 1;
 }
 
-.popup-html-content pre {
-  white-space: pre-wrap;
-  word-break: break-word;
-  font: inherit;
+.popup-theme-dark .popup-view-switch-button.is-active {
+  background: rgba(118, 210, 255, 0.16);
+  color: #dff6ff;
 }
 
-.popup-html-content ul,
-.popup-html-content ol {
-  padding-left: 18px;
+.popup-theme-light .popup-view-switch-button.is-active {
+  background: rgba(22, 122, 197, 0.14);
+  color: #0f4f86;
 }
 
-.popup-html-content table {
+.popup-html-frame {
+  margin-top: 6px;
   width: 100%;
-  border-collapse: collapse;
+  min-height: 160px;
+  border: 1px solid;
+  border-radius: 12px;
+  background: #ffffff;
+  overflow: hidden;
 }
 
-.popup-html-content td,
-.popup-html-content th {
-  padding: 4px 6px;
-  border: 1px solid rgba(127, 127, 127, 0.18);
-  text-align: left;
-  vertical-align: top;
+.popup-theme-dark .popup-html-frame {
+  border-color: rgba(129, 177, 230, 0.1);
+}
+
+.popup-theme-light .popup-html-frame {
+  border-color: rgba(41, 73, 104, 0.1);
 }
 
 .app-eyebrow {
