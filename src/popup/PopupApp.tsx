@@ -27,6 +27,8 @@ type CopyHint = {
   tone: "success" | "error";
 };
 
+type MessageViewMode = "html" | "text";
+
 function getFeedbackBadge(type: Feedback["type"]) {
   if (type === "success") {
     return "OK";
@@ -100,33 +102,34 @@ function extractMailbox(value: string) {
   return emailMatch?.[0] || value.trim();
 }
 
-function sanitizeEmailHtml(html: string) {
+function normalizePlainTextContent(value: string) {
+  return value
+    .replace(/\u00a0/g, " ")
+    .split(/\r?\n/)
+    .map((line) => line.replace(/[ \t]+/g, " ").trim())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function buildEmailHtmlDocument(html: string) {
   const parser = new DOMParser();
   const document = parser.parseFromString(html, "text/html");
-  const allowedTags = new Set([
-    "a",
-    "b",
-    "blockquote",
-    "br",
-    "code",
-    "div",
-    "em",
-    "hr",
-    "li",
-    "ol",
-    "p",
-    "pre",
-    "span",
-    "strong",
-    "table",
-    "tbody",
-    "td",
-    "th",
-    "thead",
-    "tr",
-    "u",
-    "ul"
-  ]);
+
+  for (const element of Array.from(document.querySelectorAll("script, iframe, object, embed"))) {
+    element.remove();
+  }
+
+  for (const metaRefresh of Array.from(document.querySelectorAll('meta[http-equiv="refresh" i]'))) {
+    metaRefresh.remove();
+  }
+
+  for (const formElement of Array.from(
+    document.querySelectorAll("form, button, input, select, textarea")
+  )) {
+    formElement.replaceWith(...Array.from(formElement.childNodes));
+  }
+
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
   const elements: Element[] = [];
 
@@ -135,40 +138,138 @@ function sanitizeEmailHtml(html: string) {
   }
 
   for (const element of elements) {
-    const tagName = element.tagName.toLowerCase();
-
-    if (!allowedTags.has(tagName)) {
-      element.replaceWith(...Array.from(element.childNodes));
-      continue;
-    }
-
     for (const attribute of Array.from(element.attributes)) {
       const attributeName = attribute.name.toLowerCase();
       const attributeValue = attribute.value.trim();
 
-      if (attributeName.startsWith("on") || attributeName === "style" || attributeName === "src") {
+      if (attributeName.startsWith("on")) {
         element.removeAttribute(attribute.name);
         continue;
       }
 
       if (attributeName === "href") {
-        if (!/^https?:/i.test(attributeValue) && !/^mailto:/i.test(attributeValue)) {
+        if (
+          !/^https?:/i.test(attributeValue) &&
+          !/^mailto:/i.test(attributeValue) &&
+          !/^tel:/i.test(attributeValue) &&
+          !/^#/i.test(attributeValue)
+        ) {
           element.removeAttribute(attribute.name);
           continue;
         }
 
         element.setAttribute("target", "_blank");
         element.setAttribute("rel", "noreferrer noopener");
-        continue;
-      }
-
-      if (!["href", "target", "rel", "colspan", "rowspan"].includes(attributeName)) {
-        element.removeAttribute(attribute.name);
       }
     }
   }
 
-  return document.body.innerHTML.trim();
+  const head = document.head.innerHTML.trim();
+  const body = document.body.innerHTML.trim();
+
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <base target="_blank" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+    </style>
+    ${head}
+    <style>
+
+      body {
+        overflow-wrap: break-word;
+      }
+
+      img {
+        max-width: 100% !important;
+        height: auto !important;
+      }
+
+      table {
+        max-width: 100% !important;
+      }
+    </style>
+  </head>
+  <body>${body}</body>
+</html>`;
+}
+
+type EmailHtmlFrameProps = {
+  html: string;
+  title: string;
+};
+
+function EmailHtmlFrame({ html, title }: EmailHtmlFrameProps) {
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const [frameHeight, setFrameHeight] = useState(320);
+  const srcDoc = buildEmailHtmlDocument(html);
+
+  function syncFrameHeight() {
+    const iframe = iframeRef.current;
+    const document = iframe?.contentDocument;
+    const body = document?.body;
+    const root = document?.documentElement;
+
+    if (!iframe || !body || !root) {
+      return;
+    }
+
+    const nextHeight = Math.max(
+      body.scrollHeight,
+      body.offsetHeight,
+      root.scrollHeight,
+      root.offsetHeight,
+      160
+    );
+
+    setFrameHeight(nextHeight);
+  }
+
+  function handleLoad() {
+    syncFrameHeight();
+
+    const document = iframeRef.current?.contentDocument;
+    if (!document) {
+      return;
+    }
+
+    for (const image of Array.from(document.images)) {
+      if (image.complete) {
+        continue;
+      }
+
+      image.addEventListener("load", syncFrameHeight, { once: true });
+      image.addEventListener("error", syncFrameHeight, { once: true });
+    }
+
+    window.setTimeout(syncFrameHeight, 60);
+    window.setTimeout(syncFrameHeight, 220);
+    window.setTimeout(syncFrameHeight, 600);
+  }
+
+  useEffect(() => {
+    setFrameHeight(320);
+  }, [srcDoc]);
+
+  return (
+    <iframe
+      ref={iframeRef}
+      className="popup-html-frame"
+      title={title}
+      sandbox="allow-popups allow-popups-to-escape-sandbox allow-same-origin"
+      loading="lazy"
+      srcDoc={srcDoc}
+      style={{ height: `${frameHeight}px` }}
+      onLoad={handleLoad}
+    />
+  );
 }
 
 export function PopupApp() {
@@ -179,6 +280,7 @@ export function PopupApp() {
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
   const [copyHint, setCopyHint] = useState<CopyHint | null>(null);
   const [expandedMessageId, setExpandedMessageId] = useState<string | null>(null);
+  const [messageViewModes, setMessageViewModes] = useState<Record<string, MessageViewMode>>({});
   const [loading, setLoading] = useState(true);
   const [theme, setTheme] = useState<PopupTheme>("dark");
 
@@ -283,6 +385,7 @@ export function PopupApp() {
   useEffect(() => {
     if (!selectedProfile) {
       setExpandedMessageId(null);
+      setMessageViewModes({});
       return;
     }
 
@@ -291,7 +394,29 @@ export function PopupApp() {
         ? current
         : null
     );
+    setMessageViewModes((current) =>
+      Object.fromEntries(
+        Object.entries(current).filter(([messageId]) =>
+          selectedProfile.messages.some((message) => message.id === messageId)
+        )
+      )
+    );
   }, [selectedProfile]);
+
+  function getMessageViewMode(messageId: string, hasHtmlContent: boolean): MessageViewMode {
+    if (!hasHtmlContent) {
+      return "text";
+    }
+
+    return messageViewModes[messageId] || "html";
+  }
+
+  function handleChangeMessageView(messageId: string, mode: MessageViewMode) {
+    setMessageViewModes((current) => ({
+      ...current,
+      [messageId]: mode
+    }));
+  }
 
   async function persistProfiles(nextProfiles: DuckProfile[], nextSelectedId: string) {
     setProfiles(nextProfiles);
@@ -605,6 +730,11 @@ export function PopupApp() {
           <div className="popup-mail-list">
             {selectedProfile.messages.map((message) => {
               const messageTime = formatListDateTime(message.receivedAt);
+              const hasHtmlContent = Boolean(message.htmlContent?.trim());
+              const textContent = normalizePlainTextContent(
+                message.content || message.raw || message.preview || "暂无邮件内容"
+              );
+              const viewMode = getMessageViewMode(message.id, hasHtmlContent);
 
               return (
               <article
@@ -659,16 +789,36 @@ export function PopupApp() {
                       <span>{message.recipientAddress || selectedProfile.inbox?.address || "未知收件地址"}</span>
                     </div>
                     <div className="popup-raw-box">
-                      <span>邮件内容</span>
-                      {message.htmlContent ? (
-                        <div
-                          className="popup-html-content"
-                          dangerouslySetInnerHTML={{
-                            __html: sanitizeEmailHtml(message.htmlContent)
-                          }}
+                      <div className="popup-mail-content-head">
+                        <span>邮件内容</span>
+                        {hasHtmlContent ? (
+                          <div className="popup-view-switch" role="tablist" aria-label="邮件视图切换">
+                            <button
+                              type="button"
+                              className={`popup-view-switch-button ${viewMode === "html" ? "is-active" : ""}`}
+                              onClick={() => handleChangeMessageView(message.id, "html")}
+                              aria-pressed={viewMode === "html"}
+                            >
+                              HTML
+                            </button>
+                            <button
+                              type="button"
+                              className={`popup-view-switch-button ${viewMode === "text" ? "is-active" : ""}`}
+                              onClick={() => handleChangeMessageView(message.id, "text")}
+                              aria-pressed={viewMode === "text"}
+                            >
+                              纯文本
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
+                      {viewMode === "html" && message.htmlContent ? (
+                        <EmailHtmlFrame
+                          html={message.htmlContent}
+                          title={`${message.subject || "邮件"} HTML 视图`}
                         />
                       ) : (
-                        <pre>{message.content || message.raw || message.preview || "暂无邮件内容"}</pre>
+                        <pre>{textContent}</pre>
                       )}
                     </div>
                   </div>
