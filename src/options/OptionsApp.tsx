@@ -1047,101 +1047,80 @@ export function OptionsApp() {
           ) : (
             <>
               <section className="mode-shell-inner mode-summary">
-                <div className="mode-top-row">
-                  <div>
-                    <div className="mode-summary-title">状态信息</div>
-                    <div className="mode-summary-desc">当前配置地址、同步状态和邮件内容都集中在这里查看。</div>
-                  </div>
-                  <div className="mode-action-row">
-                    {selectedProfile.mode === "duck" ? (
-                      <button
-                        className="mode-ghost-btn"
-                        disabled={busyAction !== null}
-                        onClick={() => void handleGenerateAlias()}
-                      >
-                        {busyAction === "alias" ? "生成中..." : "生成 Duck 地址"}
-                      </button>
-                    ) : (
-                      <button
-                        className="mode-ghost-btn"
-                        disabled={busyAction !== null}
-                        onClick={() => void handleCreateInbox()}
-                      >
-                        {busyAction === "inbox" ? "创建中..." : "创建收件箱"}
-                      </button>
-                    )}
-                    <button
-                      className="mode-secondary-btn"
-                      disabled={busyAction !== null}
-                      onClick={() => void handleSyncMessages()}
-                    >
-                      {busyAction === "sync" ? "同步中..." : "立即同步"}
-                    </button>
+                <div>
+                  <div className="mode-summary-title">当前状态</div>
+                  <div className="mode-summary-desc">
+                    把有用的状态压成一块：当前配置、同步时间、转发链路和操作按钮，不再重复展示相同信息。
                   </div>
                 </div>
 
-                <div className="mode-summary-grid">
-                  <div className="mode-stat-card">
-                    <span>显示名称</span>
+                <div className="mode-status-inline">
+                  <span className="mode-status-pill">
+                    配置
                     <strong>{selectedProfile.name || "未命名"}</strong>
-                  </div>
-                  <div className="mode-stat-card">
-                    <span>接入方式</span>
+                  </span>
+                  <span className="mode-status-pill">
+                    模式
                     <strong>{getModeLabel(selectedProfile.mode)}</strong>
-                  </div>
-                  <div className="mode-stat-card">
-                    <span>当前地址</span>
-                    <strong>{stats.currentAddress}</strong>
-                  </div>
-                  <div className="mode-stat-card">
-                    <span>最近同步</span>
+                  </span>
+                  <span className="mode-status-pill">
+                    最近同步
                     <strong>{formatAbsoluteDateTime(selectedProfile.lastSyncedAt)}</strong>
-                  </div>
-                  <div className="mode-stat-card">
-                    <span>邮件总数</span>
-                    <strong>{stats.total}</strong>
-                  </div>
-                  <div className="mode-stat-card">
-                    <span>未读数量</span>
-                    <strong>{stats.unread}</strong>
-                  </div>
-                </div>
-              </section>
-
-              <section className="mode-shell-inner mode-section">
-                <div className="mode-section-head">
-                  <div>
-                    <div className="mode-section-title">当前运行状态</div>
-                    <div className="mode-section-desc">状态页只负责展示已经生效的地址、收件箱和同步结果。</div>
-                  </div>
+                  </span>
                 </div>
 
-                <div className="mode-state-grid">
-                  {selectedProfile.mode === "duck" ? (
-                    <article className="mode-state-card">
-                      <span>当前 Duck 地址</span>
-                      <strong>{currentAlias?.address || "还没有生成 Duck 地址"}</strong>
-                      <em>生成后这里会显示当前正在使用的 Duck 别名。</em>
-                    </article>
-                  ) : (
-                    <article className="mode-state-card">
-                      <span>当前模式</span>
-                      <strong>Temp Mail 直连</strong>
-                      <em>该模式下邮件会直接来自你创建的 Temp Mail 收件箱。</em>
-                    </article>
-                  )}
+                <div className="mode-route-card">
+                  <div className="mode-route-head">
+                    <div className="mode-route-top">
+                      <span className="mode-route-chip">
+                        {selectedProfile.mode === "duck" ? "当前 Duck 地址" : "当前模式"}
+                      </span>
+                      <span className="mode-route-chip">当前收件箱</span>
+                    </div>
 
-                  <article className="mode-state-card">
-                    <span>当前收件箱</span>
-                    <strong>{selectedProfile.inbox?.address || "尚未创建收件箱"}</strong>
-                    <em>
-                      {selectedProfile.inbox?.addressJwt
-                        ? "JWT 已准备好，可以直接同步并查看邮件。"
-                        : selectedProfile.mode === "duck"
-                          ? "请回到编辑配置页填写现成的 Temp Mail 地址和 JWT。"
-                          : "点击“创建收件箱”后会自动回填地址和 JWT。"}
-                    </em>
-                  </article>
+                    <div className="mode-route-actions">
+                      {selectedProfile.mode === "duck" ? (
+                        <button
+                          className="mode-ghost-btn mode-route-action-btn"
+                          disabled={busyAction !== null}
+                          onClick={() => void handleGenerateAlias()}
+                        >
+                          {busyAction === "alias" ? "生成中..." : "生成 Duck 地址"}
+                        </button>
+                      ) : (
+                        <button
+                          className="mode-ghost-btn mode-route-action-btn"
+                          disabled={busyAction !== null}
+                          onClick={() => void handleCreateInbox()}
+                        >
+                          {busyAction === "inbox" ? "创建中..." : "创建收件箱"}
+                        </button>
+                      )}
+                      <button
+                        className="mode-secondary-btn mode-route-action-btn"
+                        disabled={busyAction !== null}
+                        onClick={() => void handleSyncMessages()}
+                      >
+                        {busyAction === "sync" ? "同步中..." : "立即同步"}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="mode-route-line">
+                    <code>
+                      {selectedProfile.mode === "duck"
+                        ? currentAlias?.address || "还没有生成 Duck 地址"
+                        : "Temp Mail 直连"}
+                    </code>
+                    <span>→</span>
+                    <code>{selectedProfile.inbox?.address || "尚未创建收件箱"}</code>
+                  </div>
+
+                  <div className="mode-route-note">
+                    {selectedProfile.mode === "duck"
+                      ? "当前这套配置会把 Duck 收到的邮件转发到右侧收件箱，再由插件同步展示。"
+                      : "当前模式会直接从右侧收件箱同步邮件，状态页只展示最终同步结果。"}
+                  </div>
                 </div>
               </section>
 
@@ -1151,7 +1130,17 @@ export function OptionsApp() {
                     <div className="mode-section-title">邮件列表</div>
                     <div className="mode-section-desc">状态页里可以直接查看当前配置同步到的邮件内容。</div>
                   </div>
-                  <div className="mode-mail-count">{stats.total} 封</div>
+                </div>
+
+                <div className="mode-mail-counter">
+                  <span className="mode-status-pill">
+                    总数
+                    <strong>{stats.total}</strong>
+                  </span>
+                  <span className="mode-status-pill">
+                    未读
+                    <strong>{stats.unread}</strong>
+                  </span>
                 </div>
 
                 <StatusMailList
