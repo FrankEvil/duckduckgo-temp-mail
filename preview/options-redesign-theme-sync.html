@@ -1,0 +1,750 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Duck Mailbox Settings Preview</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --page-bg:
+          radial-gradient(circle at 0 0, rgba(83, 151, 255, 0.16), transparent 28%),
+          linear-gradient(180deg, #07111d 0%, #0a1626 100%);
+        --panel-bg: rgba(10, 18, 31, 0.84);
+        --panel-strong: rgba(13, 24, 41, 0.95);
+        --panel-soft: rgba(255, 255, 255, 0.03);
+        --panel-border: rgba(129, 177, 230, 0.12);
+        --text-main: #eef5ff;
+        --text-soft: #8ea1bb;
+        --text-dim: #6d7f98;
+        --brand: #7ed6ff;
+        --brand-strong: #2f9ef2;
+        --success: #41d39c;
+        --shadow: 0 24px 60px rgba(3, 9, 18, 0.34);
+      }
+
+      body[data-theme="light"] {
+        color-scheme: light;
+        --page-bg:
+          radial-gradient(circle at 0 0, rgba(74, 152, 255, 0.16), transparent 30%),
+          linear-gradient(180deg, #eef5fb 0%, #dce8f4 100%);
+        --panel-bg: rgba(255, 255, 255, 0.84);
+        --panel-strong: rgba(255, 255, 255, 0.94);
+        --panel-soft: rgba(33, 72, 110, 0.04);
+        --panel-border: rgba(41, 73, 104, 0.1);
+        --text-main: #102033;
+        --text-soft: #61738b;
+        --text-dim: #7c8fa6;
+        --brand: #197bcb;
+        --brand-strong: #0f69b2;
+        --success: #129264;
+        --shadow: 0 24px 60px rgba(70, 97, 125, 0.16);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+        background: var(--page-bg);
+        color: var(--text-main);
+      }
+
+      button,
+      input,
+      textarea,
+      select {
+        font: inherit;
+      }
+
+      .page {
+        width: min(1440px, calc(100vw - 32px));
+        margin: 18px auto;
+        padding: 18px;
+        border: 1px solid var(--panel-border);
+        border-radius: 28px;
+        background: rgba(255, 255, 255, 0.02);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(16px);
+      }
+
+      .layout {
+        display: grid;
+        grid-template-columns: 280px minmax(0, 1fr);
+        gap: 18px;
+      }
+
+      .shell {
+        border: 1px solid var(--panel-border);
+        border-radius: 24px;
+        background: var(--panel-bg);
+        backdrop-filter: blur(14px);
+      }
+
+      .sidebar {
+        padding: 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+
+      .sidebar-top,
+      .toolbar,
+      .summary-top,
+      .section-head,
+      .action-row,
+      .footer-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .brand {
+        display: grid;
+        gap: 6px;
+      }
+
+      .eyebrow {
+        font-size: 11px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        font-weight: 800;
+        color: var(--brand);
+      }
+
+      .brand strong,
+      .summary-title {
+        font-size: 20px;
+        line-height: 1.2;
+      }
+
+      .muted {
+        color: var(--text-soft);
+        font-size: 13px;
+        line-height: 1.5;
+      }
+
+      .ghost-btn,
+      .icon-btn,
+      .primary-btn,
+      .secondary-btn {
+        border: 1px solid var(--panel-border);
+        border-radius: 14px;
+        cursor: pointer;
+      }
+
+      .ghost-btn,
+      .secondary-btn,
+      .icon-btn {
+        background: var(--panel-strong);
+        color: var(--text-main);
+      }
+
+      .ghost-btn {
+        height: 42px;
+        padding: 0 14px;
+        font-weight: 700;
+      }
+
+      .icon-btn {
+        width: 42px;
+        height: 42px;
+        font-size: 18px;
+      }
+
+      .primary-btn {
+        height: 44px;
+        padding: 0 18px;
+        border: none;
+        background: linear-gradient(180deg, #89ddff 0%, #5cc3ff 100%);
+        color: #07101b;
+        font-weight: 800;
+      }
+
+      body[data-theme="light"] .primary-btn {
+        background: linear-gradient(180deg, #1683d1 0%, #0e6eb7 100%);
+        color: #fff;
+      }
+
+      .secondary-btn {
+        height: 44px;
+        padding: 0 18px;
+        font-weight: 700;
+      }
+
+      .duck-stack {
+        display: grid;
+        gap: 10px;
+      }
+
+      .duck-item {
+        padding: 14px 14px 12px;
+        border-radius: 18px;
+        border: 1px solid var(--panel-border);
+        background: var(--panel-soft);
+      }
+
+      .duck-item.active {
+        border-color: rgba(126, 214, 255, 0.34);
+        background: linear-gradient(180deg, rgba(126, 214, 255, 0.1), rgba(126, 214, 255, 0.03));
+        box-shadow: inset 0 0 0 1px rgba(126, 214, 255, 0.06);
+      }
+
+      body[data-theme="light"] .duck-item.active {
+        border-color: rgba(25, 123, 203, 0.24);
+        background: linear-gradient(180deg, rgba(25, 123, 203, 0.09), rgba(25, 123, 203, 0.03));
+      }
+
+      .duck-item-title {
+        font-size: 15px;
+        font-weight: 800;
+      }
+
+      .duck-item-meta {
+        margin-top: 6px;
+        color: var(--text-soft);
+        font-size: 13px;
+      }
+
+      .duck-status {
+        margin-top: 10px;
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: rgba(65, 211, 156, 0.12);
+        color: var(--success);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .duck-status::before {
+        content: "";
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: currentColor;
+        box-shadow: 0 0 0 5px rgba(65, 211, 156, 0.12);
+      }
+
+      .sidebar-foot {
+        margin-top: auto;
+        padding: 14px;
+        border-radius: 18px;
+        border: 1px dashed var(--panel-border);
+        color: var(--text-soft);
+        font-size: 13px;
+        line-height: 1.55;
+      }
+
+      .content {
+        padding: 18px;
+        display: grid;
+        gap: 18px;
+      }
+
+      .toolbar {
+        padding: 4px;
+      }
+
+      .theme-sync {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        border-radius: 999px;
+        background: rgba(126, 214, 255, 0.1);
+        color: var(--brand);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .theme-sync::before {
+        content: "◐";
+        font-size: 14px;
+      }
+
+      .summary {
+        padding: 20px;
+      }
+
+      .summary-grid {
+        margin-top: 18px;
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .stat {
+        padding: 14px 15px;
+        border-radius: 18px;
+        border: 1px solid var(--panel-border);
+        background: var(--panel-soft);
+      }
+
+      .stat-label {
+        font-size: 11px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--text-dim);
+      }
+
+      .stat-value {
+        margin-top: 8px;
+        font-size: 15px;
+        font-weight: 800;
+        word-break: break-word;
+      }
+
+      .settings-grid {
+        display: grid;
+        gap: 18px;
+      }
+
+      .section {
+        padding: 18px;
+      }
+
+      .section-title {
+        font-size: 17px;
+        font-weight: 800;
+      }
+
+      .section-desc {
+        margin-top: 6px;
+        color: var(--text-soft);
+        font-size: 13px;
+      }
+
+      .field-grid {
+        margin-top: 16px;
+        display: grid;
+        grid-template-columns: repeat(12, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .field {
+        grid-column: span 4;
+        display: grid;
+        gap: 8px;
+      }
+
+      .field.span-6 {
+        grid-column: span 6;
+      }
+
+      .field.span-8 {
+        grid-column: span 8;
+      }
+
+      .field.span-12 {
+        grid-column: span 12;
+      }
+
+      .field label {
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--text-dim);
+      }
+
+      .input,
+      .textarea,
+      .select {
+        width: 100%;
+        border: 1px solid var(--panel-border);
+        border-radius: 16px;
+        background: var(--panel-strong);
+        color: var(--text-main);
+      }
+
+      .input,
+      .select {
+        height: 46px;
+        padding: 0 14px;
+      }
+
+      .textarea {
+        min-height: 108px;
+        padding: 12px 14px;
+        resize: none;
+      }
+
+      .inline-card {
+        padding: 14px;
+        border-radius: 18px;
+        border: 1px solid var(--panel-border);
+        background: var(--panel-soft);
+      }
+
+      .token-box {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+      }
+
+      .token-meta {
+        min-width: 0;
+      }
+
+      .token-name {
+        font-size: 14px;
+        font-weight: 800;
+      }
+
+      .token-value {
+        margin-top: 5px;
+        color: var(--text-soft);
+        font-size: 13px;
+        word-break: break-all;
+      }
+
+      .checkbox-row {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        margin-top: 8px;
+        color: var(--text-soft);
+        font-size: 13px;
+      }
+
+      .checkbox-row input {
+        width: 16px;
+        height: 16px;
+      }
+
+      .footer-bar {
+        padding: 18px;
+      }
+
+      .footer-note {
+        color: var(--text-soft);
+        font-size: 13px;
+      }
+
+      .preview-mail {
+        margin-top: 16px;
+        display: grid;
+        grid-template-columns: 1.15fr 0.85fr;
+        gap: 12px;
+      }
+
+      .mail-card {
+        padding: 16px;
+        border-radius: 18px;
+        border: 1px solid var(--panel-border);
+        background: var(--panel-soft);
+      }
+
+      .mail-card-title {
+        font-size: 14px;
+        font-weight: 800;
+      }
+
+      .mail-card-meta {
+        margin-top: 8px;
+        color: var(--text-soft);
+        font-size: 13px;
+        line-height: 1.55;
+      }
+
+      .mail-route {
+        margin-top: 12px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        color: var(--text-soft);
+        font-size: 13px;
+      }
+
+      @media (max-width: 1180px) {
+        .layout {
+          grid-template-columns: 1fr;
+        }
+
+        .summary-grid,
+        .preview-mail {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+
+      @media (max-width: 860px) {
+        .page {
+          width: calc(100vw - 16px);
+          margin: 8px auto;
+          padding: 10px;
+          border-radius: 20px;
+        }
+
+        .field,
+        .field.span-6,
+        .field.span-8,
+        .field.span-12,
+        .summary-grid,
+        .preview-mail {
+          grid-column: span 12;
+          grid-template-columns: 1fr;
+        }
+
+        .toolbar,
+        .sidebar-top,
+        .footer-bar {
+          flex-wrap: wrap;
+        }
+      }
+    </style>
+  </head>
+  <body data-theme="dark">
+    <div class="page">
+      <div class="layout">
+        <aside class="shell sidebar">
+          <div class="sidebar-top">
+            <div class="brand">
+              <span class="eyebrow">Duck Mailbox</span>
+              <strong>Duck 列表</strong>
+            </div>
+            <button class="ghost-btn">新增 Duck</button>
+          </div>
+
+          <div class="duck-stack">
+            <div class="duck-item active">
+              <div class="duck-item-title">默认 Duck</div>
+              <div class="duck-item-meta">fancy-cope-ravine@duck.com</div>
+              <div class="duck-status">已连接</div>
+            </div>
+
+            <div class="duck-item">
+              <div class="duck-item-title">注册站点 A</div>
+              <div class="duck-item-meta">duckduckgo@evil.de5.net</div>
+            </div>
+
+            <div class="duck-item">
+              <div class="duck-item-title">OpenAI 测试</div>
+              <div class="duck-item-meta">animate-hanky-zit@duck.com</div>
+            </div>
+          </div>
+
+          <div class="sidebar-foot">
+            设计目标：
+            <br />
+            一个 Duck 绑定一套 Duck token、Temp Mail 配置和收件箱信息。
+            <br />
+            主题应与 popup 保持一致。
+          </div>
+        </aside>
+
+        <main class="shell content">
+          <div class="toolbar">
+            <div class="brand">
+              <span class="eyebrow">Settings Workbench</span>
+              <div class="summary-title">当前 Duck</div>
+              <div class="muted">重新整理成更聚焦、更像工作台的配置页，避免一整屏表单堆叠。</div>
+            </div>
+            <div class="action-row">
+              <div class="theme-sync">主题跟随 popup</div>
+              <button class="icon-btn" id="theme-toggle" title="切换主题">◐</button>
+            </div>
+          </div>
+
+          <section class="shell summary">
+            <div class="summary-top">
+              <div>
+                <div class="summary-title">默认 Duck</div>
+                <div class="muted">一个 Profile 绑定一套 Duck token、Temp Mail 配置和收件箱。</div>
+              </div>
+              <div class="action-row">
+                <button class="secondary-btn">测试配置</button>
+                <button class="primary-btn">保存当前 Duck</button>
+              </div>
+            </div>
+
+            <div class="summary-grid">
+              <div class="stat">
+                <div class="stat-label">当前 Duck 地址</div>
+                <div class="stat-value">fancy-cope-ravine@duck.com</div>
+              </div>
+              <div class="stat">
+                <div class="stat-label">Temp 收件地址</div>
+                <div class="stat-value">duckduckgo@evil.de5.net</div>
+              </div>
+              <div class="stat">
+                <div class="stat-label">最近同步</div>
+                <div class="stat-value">2026-04-04 10:28:12</div>
+              </div>
+              <div class="stat">
+                <div class="stat-label">邮件状态</div>
+                <div class="stat-value">9 封邮件 / 3 封未读</div>
+              </div>
+            </div>
+          </section>
+
+          <div class="settings-grid">
+            <section class="shell section">
+              <div class="section-head">
+                <div>
+                  <div class="section-title">DuckDuckGo 配置</div>
+                  <div class="section-desc">只保留和生成 `@duck.com` 别名直接相关的设置。</div>
+                </div>
+                <button class="ghost-btn">生成新别名</button>
+              </div>
+
+              <div class="field-grid">
+                <div class="field span-6">
+                  <label>Duck 名称</label>
+                  <input class="input" value="默认 Duck" />
+                </div>
+                <div class="field span-6">
+                  <label>Alias Domain</label>
+                  <input class="input" value="duck.com" />
+                </div>
+                <div class="field span-4">
+                  <label>API Base URL</label>
+                  <input class="input" value="https://quack.duckduckgo.com" />
+                </div>
+                <div class="field span-8">
+                  <label>Duck Token</label>
+                  <input class="input" value="vzjuzxr1nnhumtkd41jqqrtrtihuhw1rabzc5jai8psky1z4wshux8k3vtfzy" />
+                </div>
+              </div>
+            </section>
+
+            <section class="shell section">
+              <div class="section-head">
+                <div>
+                  <div class="section-title">Temp Mail 配置</div>
+                  <div class="section-desc">围绕我们实际用到的一种协议收敛，不再把字段平铺得太散。</div>
+                </div>
+                <button class="ghost-btn">创建收件箱</button>
+              </div>
+
+              <div class="field-grid">
+                <div class="field span-4">
+                  <label>Base URL</label>
+                  <input class="input" value="https://temp-email.evil.de5.net" />
+                </div>
+                <div class="field span-4">
+                  <label>Domain</label>
+                  <input class="input" value="evil.de5.net" />
+                </div>
+                <div class="field span-4">
+                  <label>Name Prefix</label>
+                  <input class="input" value="duckrelay-" />
+                </div>
+
+                <div class="field span-4">
+                  <label>Admin Auth</label>
+                  <input class="input" value="eyJhbGciOiJIUzI1NiIsInR..." />
+                </div>
+                <div class="field span-4">
+                  <label>Custom Auth</label>
+                  <input class="input" value="" placeholder="可选" />
+                </div>
+                <div class="field span-2">
+                  <label>轮询间隔</label>
+                  <input class="input" value="5000" />
+                </div>
+                <div class="field span-2">
+                  <label>超时</label>
+                  <input class="input" value="120000" />
+                </div>
+              </div>
+
+              <label class="checkbox-row">
+                <input type="checkbox" checked />
+                <span>创建地址时启用前缀</span>
+              </label>
+            </section>
+
+            <section class="shell section">
+              <div class="section-head">
+                <div>
+                  <div class="section-title">收件箱与同步</div>
+                  <div class="section-desc">收件地址、JWT、最近一次同步结果和正文预览放在一个区块里。</div>
+                </div>
+                <button class="ghost-btn">立即同步</button>
+              </div>
+
+              <div class="field-grid">
+                <div class="field span-6">
+                  <label>Temp Mail Address</label>
+                  <input class="input" value="duckduckgo@evil.de5.net" />
+                </div>
+                <div class="field span-6">
+                  <label>Temp Mail Token / JWT</label>
+                  <input class="input" value="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." />
+                </div>
+              </div>
+
+              <div class="preview-mail">
+                <div class="mail-card">
+                  <div class="mail-card-title">最近一封邮件预览</div>
+                  <div class="mail-card-meta">
+                    你的 ChatGPT 代码为 829490
+                    <br />
+                    发件人：OpenAI &lt;otp_at_tm1.openai.com&gt;
+                  </div>
+                  <div class="mail-route">
+                    <span>otp_at_tm1.openai.com</span>
+                    <span>→</span>
+                    <span>duckduckgo@evil.de5.net</span>
+                  </div>
+                </div>
+
+                <div class="inline-card">
+                  <div class="token-name">同步状态</div>
+                  <div class="token-value">
+                    上次同步：2026-04-04 10:28:12
+                    <br />
+                    已同步 9 封邮件，3 封未读。
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="shell section">
+              <div class="section-head">
+                <div>
+                  <div class="section-title">备注与调试</div>
+                  <div class="section-desc">把低频使用的内容塞到最后，不抢主要配置区域的空间。</div>
+                </div>
+                <button class="ghost-btn">查看原始 JSON</button>
+              </div>
+
+              <div class="field-grid">
+                <div class="field span-12">
+                  <label>说明</label>
+                  <textarea class="textarea">1. 这里的收件地址应该填邮箱地址，不要填站点 URL。
+2. 主题应与 popup 共用同一份主题状态。
+3. 设置页更适合“工作台”布局，而不是纵向表单堆叠。</textarea>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <div class="shell footer-bar">
+            <div class="footer-note">这是一版纯静态预览，用来确认布局、层级和主题切换方向。</div>
+            <div class="action-row">
+              <button class="secondary-btn">取消</button>
+              <button class="primary-btn">保存并返回</button>
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+
+    <script>
+      const toggle = document.getElementById("theme-toggle");
+      toggle?.addEventListener("click", () => {
+        document.body.dataset.theme =
+          document.body.dataset.theme === "light" ? "dark" : "light";
+      });
+    </script>
+  </body>
+</html>

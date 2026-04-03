@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Duck Popup Theme Toggle Preview</title>
+    <style>
+      :root {
+        --bg-page:
+          radial-gradient(circle at top left, rgba(81, 155, 255, 0.14), transparent 28%),
+          linear-gradient(180deg, #050c16 0%, #08111d 100%);
+        --frame-bg: linear-gradient(180deg, rgba(16, 28, 44, 0.96), rgba(8, 15, 26, 0.98));
+        --panel: rgba(10, 18, 31, 0.95);
+        --panel-soft: rgba(15, 26, 43, 0.82);
+        --line: rgba(129, 177, 230, 0.12);
+        --line-strong: rgba(121, 208, 255, 0.26);
+        --text: #eef5ff;
+        --muted: #8d9eb8;
+        --brand: #76d2ff;
+        --brand-soft: rgba(118, 210, 255, 0.14);
+        --green-bg: linear-gradient(90deg, rgba(30, 90, 63, 0.92), rgba(22, 68, 53, 0.72));
+        --green-text: #d9ffe8;
+        --select-bg: #0d1726;
+        --button-bg: rgba(11, 20, 34, 0.92);
+        --shadow: 0 18px 50px rgba(2, 8, 18, 0.46);
+      }
+
+      body.light {
+        --bg-page:
+          radial-gradient(circle at top left, rgba(116, 188, 255, 0.22), transparent 30%),
+          linear-gradient(180deg, #eef5fb 0%, #dfeaf5 100%);
+        --frame-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(243, 248, 252, 0.98));
+        --panel: rgba(255, 255, 255, 0.92);
+        --panel-soft: rgba(245, 249, 253, 0.95);
+        --line: rgba(41, 73, 104, 0.1);
+        --line-strong: rgba(73, 155, 223, 0.24);
+        --text: #122033;
+        --muted: #65778f;
+        --brand: #167ac5;
+        --brand-soft: rgba(22, 122, 197, 0.1);
+        --green-bg: linear-gradient(90deg, rgba(211, 248, 228, 1), rgba(190, 241, 215, 0.96));
+        --green-text: #11613c;
+        --select-bg: #f9fbfd;
+        --button-bg: rgba(249, 251, 253, 0.96);
+        --shadow: 0 20px 56px rgba(82, 102, 131, 0.18);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: var(--bg-page);
+        font-family: "SF Pro Display", "PingFang SC", "Microsoft YaHei", sans-serif;
+        color: var(--text);
+        transition: background 180ms ease;
+      }
+
+      .frame {
+        width: 408px;
+        padding: 14px;
+        border-radius: 26px;
+        background: var(--frame-bg);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        box-shadow: var(--shadow);
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .brand {
+        color: var(--brand);
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+      }
+
+      .top-actions {
+        display: flex;
+        gap: 8px;
+      }
+
+      .icon-button {
+        width: 42px;
+        height: 42px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: var(--button-bg);
+        color: var(--text);
+        display: grid;
+        place-items: center;
+        font-size: 18px;
+        font-weight: 700;
+      }
+
+      .sync-bar {
+        margin-top: 12px;
+        min-height: 38px;
+        padding: 0 14px;
+        border-radius: 16px;
+        display: flex;
+        align-items: center;
+        background: var(--green-bg);
+        color: var(--green-text);
+        font-size: 13px;
+        border: 1px solid rgba(157, 243, 200, 0.12);
+      }
+
+      .control-panel,
+      .list-panel {
+        margin-top: 12px;
+        padding: 14px;
+        border-radius: 22px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+      }
+
+      .control-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto auto;
+        gap: 8px;
+        align-items: center;
+      }
+
+      .select-shell {
+        position: relative;
+        min-width: 0;
+      }
+
+      .select-shell::after {
+        content: "⌄";
+        position: absolute;
+        right: 12px;
+        top: 50%;
+        transform: translateY(-56%);
+        color: var(--muted);
+        pointer-events: none;
+      }
+
+      select {
+        width: 100%;
+        height: 44px;
+        padding: 0 38px 0 14px;
+        border-radius: 15px;
+        border: 1px solid var(--line);
+        background: var(--select-bg);
+        color: var(--text);
+        font-size: 15px;
+        font-weight: 700;
+        appearance: none;
+      }
+
+      .mini-button {
+        width: 44px;
+        height: 44px;
+        border-radius: 15px;
+        border: 1px solid var(--line);
+        background: var(--button-bg);
+        color: var(--text);
+        font-size: 18px;
+        font-weight: 700;
+      }
+
+      .mini-button.primary {
+        color: #07111d;
+        background: linear-gradient(180deg, #91ddff 0%, #6fcfff 100%);
+        border: none;
+      }
+
+      body.light .mini-button.primary {
+        color: #ffffff;
+        background: linear-gradient(180deg, #1b87d3 0%, #0e70b6 100%);
+      }
+
+      .mailbox-strip {
+        margin-top: 10px;
+        padding: 10px 12px;
+        border-radius: 15px;
+        background: var(--panel-soft);
+        border: 1px solid var(--line);
+      }
+
+      .mailbox-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .mailbox-label {
+        color: var(--muted);
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      .mailbox-meta {
+        color: var(--muted);
+        font-size: 11px;
+        white-space: nowrap;
+      }
+
+      .mailbox-value {
+        margin-top: 6px;
+        font-size: 15px;
+        font-weight: 700;
+        line-height: 1.35;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .list-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .list-head h2 {
+        margin: 0;
+        font-size: 16px;
+      }
+
+      .badge {
+        min-width: 34px;
+        height: 34px;
+        padding: 0 10px;
+        border-radius: 999px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid rgba(118, 210, 255, 0.12);
+        background: var(--brand-soft);
+        color: var(--brand);
+        font-size: 13px;
+        font-weight: 800;
+      }
+
+      .mail-list {
+        display: grid;
+        gap: 9px;
+        margin-top: 12px;
+      }
+
+      .mail-card {
+        padding: 12px 13px;
+        border-radius: 18px;
+        background: var(--panel-soft);
+        border: 1px solid var(--line);
+      }
+
+      .mail-card.active {
+        border-color: var(--line-strong);
+      }
+
+      .mail-main {
+        display: grid;
+        grid-template-columns: 10px minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: start;
+      }
+
+      .dot {
+        width: 8px;
+        height: 8px;
+        margin-top: 6px;
+        border-radius: 50%;
+        background: var(--brand);
+        box-shadow: 0 0 0 6px rgba(118, 210, 255, 0.08);
+      }
+
+      .mail-title {
+        margin: 0;
+        font-size: 15px;
+        line-height: 1.4;
+      }
+
+      .mail-from {
+        margin-top: 4px;
+        color: var(--text);
+        opacity: 0.82;
+        font-size: 12px;
+      }
+
+      .mail-preview {
+        margin-top: 6px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.5;
+        display: -webkit-box;
+        overflow: hidden;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+      }
+
+      .mail-time {
+        color: var(--muted);
+        font-size: 11px;
+        white-space: nowrap;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="frame">
+      <header class="topbar">
+        <div class="brand">Duck Mailbox</div>
+        <div class="top-actions">
+          <button class="icon-button" id="theme-toggle" title="切换主题">◐</button>
+          <button class="icon-button" title="设置">⚙</button>
+        </div>
+      </header>
+
+      <div class="sync-bar">已同步 4 封邮件</div>
+
+      <section class="control-panel">
+        <div class="control-grid">
+          <div class="select-shell">
+            <select>
+              <option>注册站点 A</option>
+              <option>默认 Duck</option>
+              <option>测试账号 B</option>
+            </select>
+          </div>
+          <button class="mini-button primary" title="生成">+</button>
+          <button class="mini-button" title="刷新">↻</button>
+        </div>
+
+        <div class="mailbox-strip">
+          <div class="mailbox-top">
+            <div class="mailbox-label">当前邮箱</div>
+            <div class="mailbox-meta">22:40 刷新</div>
+          </div>
+          <div class="mailbox-value">fancy-cope-ravine@duck.com</div>
+        </div>
+      </section>
+
+      <section class="list-panel">
+        <div class="list-head">
+          <h2>邮件列表</h2>
+          <div class="badge">4</div>
+        </div>
+
+        <div class="mail-list">
+          <article class="mail-card active">
+            <div class="mail-main">
+              <span class="dot"></span>
+              <div>
+                <h3 class="mail-title">Your sign in code</h3>
+                <div class="mail-from">Notion · team@notion.so</div>
+                <div class="mail-preview">
+                  Welcome back. Your sign in code is 482913. This email was forwarded via
+                  DuckDuckGo Email Protection.
+                </div>
+              </div>
+              <div class="mail-time">刚刚</div>
+            </div>
+          </article>
+
+          <article class="mail-card">
+            <div class="mail-main">
+              <span class="dot" style="opacity: 0.4;"></span>
+              <div>
+                <h3 class="mail-title">Verify your email</h3>
+                <div class="mail-from">Figma · no-reply@figma.com</div>
+                <div class="mail-preview">
+                  Please verify your email address to continue. Compact mode keeps only the most
+                  useful summary lines.
+                </div>
+              </div>
+              <div class="mail-time">7 分钟前</div>
+            </div>
+          </article>
+
+          <article class="mail-card">
+            <div class="mail-main">
+              <span class="dot" style="opacity: 0.4;"></span>
+              <div>
+                <h3 class="mail-title">Welcome to Linear</h3>
+                <div class="mail-from">Linear · hello@linear.app</div>
+                <div class="mail-preview">
+                  Your workspace has been created. Compact layout gives more room to the list
+                  itself instead of the header area.
+                </div>
+              </div>
+              <div class="mail-time">18 分钟前</div>
+            </div>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const button = document.getElementById("theme-toggle");
+      button.addEventListener("click", () => {
+        document.body.classList.toggle("light");
+      });
+    </script>
+  </body>
+</html>

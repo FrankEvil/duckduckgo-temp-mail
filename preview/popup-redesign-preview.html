@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Duck Popup Redesign Preview</title>
+    <style>
+      :root {
+        --bg-1: #07111f;
+        --bg-2: #0b1526;
+        --panel: rgba(10, 18, 32, 0.9);
+        --panel-soft: rgba(16, 27, 44, 0.78);
+        --line: rgba(126, 167, 219, 0.14);
+        --line-strong: rgba(129, 197, 255, 0.24);
+        --text: #edf4ff;
+        --muted: #90a3bf;
+        --brand: #79d0ff;
+        --brand-deep: #183a57;
+        --brand-soft: rgba(121, 208, 255, 0.12);
+        --success: #85f3c1;
+        --warning: #ffe08b;
+        --shadow: 0 20px 60px rgba(2, 8, 18, 0.45);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        font-family: "SF Pro Display", "PingFang SC", "Microsoft YaHei", sans-serif;
+        color: var(--text);
+        background:
+          radial-gradient(circle at top left, rgba(72, 149, 255, 0.15), transparent 28%),
+          radial-gradient(circle at bottom right, rgba(98, 228, 183, 0.08), transparent 24%),
+          linear-gradient(180deg, #06101c 0%, #09111d 100%);
+      }
+
+      .frame {
+        width: 430px;
+        padding: 20px;
+        border-radius: 30px;
+        background:
+          linear-gradient(180deg, rgba(18, 30, 49, 0.94) 0%, rgba(8, 15, 28, 0.96) 100%);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        box-shadow: var(--shadow);
+      }
+
+      .topbar {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+      }
+
+      .brand p {
+        margin: 0;
+        color: var(--brand);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.18em;
+      }
+
+      .brand h1 {
+        margin: 8px 0 0;
+        font-size: 34px;
+        line-height: 1;
+        letter-spacing: -0.05em;
+      }
+
+      .settings-button {
+        min-width: 74px;
+        height: 46px;
+        border-radius: 15px;
+        border: 1px solid var(--line);
+        background: rgba(13, 25, 42, 0.86);
+        color: var(--text);
+        font-weight: 700;
+      }
+
+      .status-banner {
+        margin-top: 18px;
+        padding: 14px 16px;
+        border-radius: 18px;
+        color: #d9ffe8;
+        background: linear-gradient(90deg, rgba(39, 102, 76, 0.88), rgba(25, 79, 60, 0.72));
+        border: 1px solid rgba(133, 243, 193, 0.12);
+      }
+
+      .panel {
+        margin-top: 18px;
+        padding: 18px;
+        border-radius: 24px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+      }
+
+      .panel h2 {
+        margin: 0;
+        font-size: 18px;
+      }
+
+      .panel-intro {
+        margin: 8px 0 0;
+        color: var(--muted);
+        line-height: 1.6;
+      }
+
+      .field {
+        margin-top: 16px;
+      }
+
+      .field span {
+        display: block;
+        margin-bottom: 8px;
+        color: var(--muted);
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .select-shell {
+        position: relative;
+      }
+
+      select {
+        width: 100%;
+        height: 52px;
+        padding: 0 16px;
+        border-radius: 18px;
+        border: 1px solid var(--line);
+        color: var(--text);
+        background: rgba(12, 21, 37, 0.95);
+        font-size: 17px;
+        font-weight: 600;
+        appearance: none;
+      }
+
+      .select-shell::after {
+        content: "⌄";
+        position: absolute;
+        right: 16px;
+        top: 50%;
+        transform: translateY(-56%);
+        color: var(--muted);
+        pointer-events: none;
+      }
+
+      .toolbar {
+        display: grid;
+        grid-template-columns: 1.15fr 0.85fr;
+        gap: 10px;
+        margin-top: 14px;
+      }
+
+      .primary,
+      .secondary {
+        height: 52px;
+        border-radius: 18px;
+        font-size: 17px;
+        font-weight: 800;
+      }
+
+      .primary {
+        border: 0;
+        color: #0a1523;
+        background: linear-gradient(180deg, #8fdbff 0%, #68c9ff 100%);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
+      }
+
+      .secondary {
+        color: var(--text);
+        border: 1px solid var(--line);
+        background: rgba(12, 21, 37, 0.95);
+      }
+
+      .address-card {
+        margin-top: 14px;
+        padding: 16px;
+        border-radius: 20px;
+        background: var(--panel-soft);
+        border: 1px solid var(--line);
+      }
+
+      .address-card .label {
+        color: var(--muted);
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .address-card strong {
+        display: block;
+        margin-top: 10px;
+        font-size: 18px;
+        line-height: 1.45;
+        word-break: break-all;
+      }
+
+      .address-meta {
+        margin-top: 10px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .mail-panel-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .mail-count {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 36px;
+        height: 36px;
+        padding: 0 12px;
+        border-radius: 999px;
+        color: var(--brand);
+        background: var(--brand-soft);
+        border: 1px solid rgba(121, 208, 255, 0.14);
+        font-weight: 800;
+      }
+
+      .mail-list {
+        display: grid;
+        gap: 12px;
+        margin-top: 16px;
+      }
+
+      .mail-item {
+        padding: 15px;
+        border-radius: 20px;
+        background: rgba(10, 18, 31, 0.86);
+        border: 1px solid var(--line);
+      }
+
+      .mail-item.active {
+        border-color: var(--line-strong);
+        background:
+          linear-gradient(180deg, rgba(13, 26, 45, 0.98), rgba(9, 18, 31, 0.98));
+        box-shadow: inset 0 0 0 1px rgba(121, 208, 255, 0.06);
+      }
+
+      .mail-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .mail-row strong {
+        font-size: 16px;
+        line-height: 1.4;
+      }
+
+      .mail-time {
+        color: var(--muted);
+        font-size: 12px;
+        white-space: nowrap;
+      }
+
+      .mail-from {
+        margin-top: 8px;
+        color: #dce7f8;
+        font-size: 13px;
+      }
+
+      .mail-preview {
+        margin-top: 8px;
+        color: var(--muted);
+        line-height: 1.6;
+        display: -webkit-box;
+        overflow: hidden;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+      }
+
+      .expand-toggle {
+        margin-top: 12px;
+        color: var(--brand);
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .mail-detail {
+        margin-top: 14px;
+        padding-top: 14px;
+        border-top: 1px solid rgba(126, 167, 219, 0.12);
+      }
+
+      .detail-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .detail-box {
+        padding: 12px;
+        border-radius: 16px;
+        background: rgba(15, 26, 43, 0.92);
+        border: 1px solid rgba(126, 167, 219, 0.08);
+      }
+
+      .detail-box span {
+        display: block;
+        color: var(--muted);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      .detail-box strong,
+      .detail-box p {
+        margin: 8px 0 0;
+        line-height: 1.55;
+      }
+
+      .raw-box {
+        margin-top: 10px;
+        padding: 12px;
+        border-radius: 16px;
+        background: rgba(8, 14, 25, 0.96);
+        border: 1px solid rgba(126, 167, 219, 0.08);
+      }
+
+      .raw-box span {
+        display: block;
+        color: var(--muted);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      .raw-box pre {
+        margin: 8px 0 0;
+        color: #dfe9f8;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-size: 12px;
+        line-height: 1.6;
+        font-family:
+          ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          Monaco,
+          Consolas,
+          "Liberation Mono",
+          "Courier New",
+          monospace;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="frame">
+      <header class="topbar">
+        <div class="brand">
+          <p>Duck Mailbox</p>
+          <h1>邮件</h1>
+        </div>
+        <button class="settings-button">设置</button>
+      </header>
+
+      <div class="status-banner">已同步 4 封邮件</div>
+
+      <section class="panel">
+        <h2>切换 Duck</h2>
+        <p class="panel-intro">名字切换、生成新邮箱、刷新邮件，都在这个卡片里完成。</p>
+
+        <div class="field">
+          <span>当前 Duck</span>
+          <div class="select-shell">
+            <select>
+              <option>默认 Duck</option>
+              <option>注册站点 A</option>
+              <option>测试账号 B</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="toolbar">
+          <button class="primary">生成</button>
+          <button class="secondary">刷新</button>
+        </div>
+
+        <div class="address-card">
+          <div class="label">当前邮箱</div>
+          <strong>fancy-cope-ravine@duck.com</strong>
+          <div class="address-meta">最近同步：2026/4/3 22:40:01</div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="mail-panel-head">
+          <div>
+            <h2>邮件列表</h2>
+            <p class="panel-intro">点击邮件卡片后，直接在当前列表中展开详情。</p>
+          </div>
+          <div class="mail-count">4</div>
+        </div>
+
+        <div class="mail-list">
+          <article class="mail-item active">
+            <div class="mail-row">
+              <strong>Your sign in code</strong>
+              <span class="mail-time">刚刚</span>
+            </div>
+            <div class="mail-from">Notion · team@notion.so</div>
+            <div class="mail-preview">
+              Welcome back. Your sign in code is 482913. This email was forwarded via DuckDuckGo
+              Email Protection.
+            </div>
+            <div class="expand-toggle">收起详情</div>
+
+            <div class="mail-detail">
+              <div class="detail-grid">
+                <div class="detail-box">
+                  <span>收件地址</span>
+                  <strong>fancy-cope-ravine@duck.com</strong>
+                </div>
+                <div class="detail-box">
+                  <span>接收时间</span>
+                  <strong>2026/4/3 22:40:01</strong>
+                </div>
+              </div>
+
+              <div class="raw-box">
+                <span>Raw Preview</span>
+                <pre>From: Notion &lt;team@notion.so&gt;
+Subject: Your sign in code
+Date: Thu, 3 Apr 2026 22:40:01 +0800
+
+Welcome back. Your one-time sign in code is 482913.</pre>
+              </div>
+            </div>
+          </article>
+
+          <article class="mail-item">
+            <div class="mail-row">
+              <strong>Verify your email</strong>
+              <span class="mail-time">7 分钟前</span>
+            </div>
+            <div class="mail-from">Figma · no-reply@figma.com</div>
+            <div class="mail-preview">
+              Please verify your email address to continue. This card shows the collapsed state by
+              default.
+            </div>
+            <div class="expand-toggle">展开详情</div>
+          </article>
+
+          <article class="mail-item">
+            <div class="mail-row">
+              <strong>Welcome to Linear</strong>
+              <span class="mail-time">18 分钟前</span>
+            </div>
+            <div class="mail-from">Linear · hello@linear.app</div>
+            <div class="mail-preview">
+              Your workspace has been created. Click below to start inviting teammates and
+              configuring your first issue flow.
+            </div>
+            <div class="expand-toggle">展开详情</div>
+          </article>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

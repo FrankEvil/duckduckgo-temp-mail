@@ -1,0 +1,473 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Duck Popup Minimal Preview</title>
+    <style>
+      :root {
+        --bg: #08111d;
+        --panel: rgba(10, 18, 31, 0.95);
+        --panel-soft: rgba(15, 26, 43, 0.82);
+        --line: rgba(129, 177, 230, 0.12);
+        --line-strong: rgba(121, 208, 255, 0.26);
+        --text: #eef5ff;
+        --muted: #8d9eb8;
+        --brand: #76d2ff;
+        --brand-soft: rgba(118, 210, 255, 0.14);
+        --green: #d9ffe8;
+        --shadow: 0 18px 50px rgba(2, 8, 18, 0.46);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background:
+          radial-gradient(circle at top left, rgba(81, 155, 255, 0.14), transparent 28%),
+          linear-gradient(180deg, #050c16 0%, #08111d 100%);
+        font-family: "SF Pro Display", "PingFang SC", "Microsoft YaHei", sans-serif;
+        color: var(--text);
+      }
+
+      .frame {
+        width: 408px;
+        padding: 14px;
+        border-radius: 26px;
+        background: linear-gradient(180deg, rgba(16, 28, 44, 0.96), rgba(8, 15, 26, 0.98));
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        box-shadow: var(--shadow);
+      }
+
+      .topbar {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .eyebrow {
+        margin: 0;
+        color: var(--brand);
+        font-size: 11px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        margin: 5px 0 0;
+        font-size: 28px;
+        line-height: 1;
+        letter-spacing: -0.05em;
+      }
+
+      .icon-button {
+        width: 42px;
+        height: 42px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: rgba(11, 20, 34, 0.92);
+        color: var(--text);
+        display: grid;
+        place-items: center;
+        font-size: 18px;
+        font-weight: 700;
+      }
+
+      .sync-bar {
+        margin-top: 12px;
+        min-height: 38px;
+        padding: 0 14px;
+        border-radius: 16px;
+        display: flex;
+        align-items: center;
+        background: linear-gradient(90deg, rgba(30, 90, 63, 0.92), rgba(22, 68, 53, 0.72));
+        color: var(--green);
+        font-size: 13px;
+        border: 1px solid rgba(157, 243, 200, 0.1);
+      }
+
+      .control-panel,
+      .list-panel {
+        margin-top: 12px;
+        padding: 14px;
+        border-radius: 22px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+      }
+
+      .control-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto auto;
+        gap: 8px;
+        align-items: center;
+      }
+
+      .select-shell {
+        position: relative;
+        min-width: 0;
+      }
+
+      .select-shell::after {
+        content: "⌄";
+        position: absolute;
+        right: 12px;
+        top: 50%;
+        transform: translateY(-56%);
+        color: var(--muted);
+        pointer-events: none;
+      }
+
+      select {
+        width: 100%;
+        height: 44px;
+        padding: 0 38px 0 14px;
+        border-radius: 15px;
+        border: 1px solid var(--line);
+        background: #0d1726;
+        color: var(--text);
+        font-size: 15px;
+        font-weight: 700;
+        appearance: none;
+      }
+
+      .mini-button {
+        width: 44px;
+        height: 44px;
+        border-radius: 15px;
+        border: 1px solid var(--line);
+        background: #0d1726;
+        color: var(--text);
+        font-size: 18px;
+        font-weight: 700;
+      }
+
+      .mini-button.primary {
+        color: #07111d;
+        background: linear-gradient(180deg, #91ddff 0%, #6fcfff 100%);
+        border: none;
+      }
+
+      .mailbox-strip {
+        margin-top: 10px;
+        padding: 10px 12px;
+        border-radius: 15px;
+        background: var(--panel-soft);
+        border: 1px solid var(--line);
+      }
+
+      .mailbox-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .mailbox-label {
+        color: var(--muted);
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      .mailbox-meta {
+        color: var(--muted);
+        font-size: 11px;
+        white-space: nowrap;
+      }
+
+      .mailbox-value {
+        margin-top: 6px;
+        font-size: 15px;
+        font-weight: 700;
+        line-height: 1.35;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .list-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .list-head h2 {
+        margin: 0;
+        font-size: 16px;
+      }
+
+      .badge {
+        min-width: 34px;
+        height: 34px;
+        padding: 0 10px;
+        border-radius: 999px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid rgba(118, 210, 255, 0.12);
+        background: var(--brand-soft);
+        color: var(--brand);
+        font-size: 13px;
+        font-weight: 800;
+      }
+
+      .mail-list {
+        display: grid;
+        gap: 9px;
+        margin-top: 12px;
+      }
+
+      .mail-card {
+        padding: 12px 13px;
+        border-radius: 18px;
+        background: rgba(9, 17, 29, 0.95);
+        border: 1px solid var(--line);
+      }
+
+      .mail-card.active {
+        border-color: var(--line-strong);
+        background: linear-gradient(180deg, rgba(12, 23, 39, 0.98), rgba(8, 16, 27, 0.98));
+      }
+
+      .mail-main {
+        display: grid;
+        grid-template-columns: 10px minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: start;
+      }
+
+      .dot {
+        width: 8px;
+        height: 8px;
+        margin-top: 6px;
+        border-radius: 50%;
+        background: var(--brand);
+        box-shadow: 0 0 0 6px rgba(118, 210, 255, 0.08);
+      }
+
+      .mail-title {
+        margin: 0;
+        font-size: 15px;
+        line-height: 1.4;
+      }
+
+      .mail-from {
+        margin-top: 4px;
+        color: #dce8fa;
+        font-size: 12px;
+      }
+
+      .mail-preview {
+        margin-top: 6px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.5;
+        display: -webkit-box;
+        overflow: hidden;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+      }
+
+      .mail-time {
+        color: var(--muted);
+        font-size: 11px;
+        white-space: nowrap;
+      }
+
+      .mail-detail {
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 1px solid rgba(129, 177, 230, 0.1);
+      }
+
+      .detail-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+
+      .detail-box {
+        padding: 9px 10px;
+        border-radius: 13px;
+        background: rgba(15, 27, 45, 0.82);
+        border: 1px solid rgba(129, 177, 230, 0.08);
+      }
+
+      .detail-box span {
+        display: block;
+        color: var(--muted);
+        font-size: 10px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .detail-box strong {
+        display: block;
+        margin-top: 5px;
+        line-height: 1.35;
+        font-size: 13px;
+      }
+
+      .detail-box.address strong {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .detail-box.time strong {
+        white-space: nowrap;
+      }
+
+      .raw {
+        margin-top: 8px;
+        padding: 10px;
+        border-radius: 14px;
+        background: rgba(6, 12, 22, 0.96);
+        border: 1px solid rgba(129, 177, 230, 0.08);
+      }
+
+      .raw span {
+        display: block;
+        color: var(--muted);
+        font-size: 10px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .raw pre {
+        margin: 6px 0 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-size: 11px;
+        line-height: 1.55;
+        color: #dce8fa;
+        font-family:
+          ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          Monaco,
+          Consolas,
+          "Liberation Mono",
+          "Courier New",
+          monospace;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="frame">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Duck Mailbox</p>
+          <h1>邮件</h1>
+        </div>
+        <button class="icon-button" title="设置">⚙</button>
+      </header>
+
+      <div class="sync-bar">已同步 4 封邮件</div>
+
+      <section class="control-panel">
+        <div class="control-grid">
+          <div class="select-shell">
+            <select>
+              <option>默认 Duck</option>
+              <option>注册站点 A</option>
+              <option>测试账号 B</option>
+            </select>
+          </div>
+          <button class="mini-button primary" title="生成">+</button>
+          <button class="mini-button" title="刷新">↻</button>
+        </div>
+
+        <div class="mailbox-strip">
+          <div class="mailbox-top">
+            <div class="mailbox-label">当前邮箱</div>
+            <div class="mailbox-meta">22:40 刷新</div>
+          </div>
+          <div class="mailbox-value">fancy-cope-ravine@duck.com</div>
+        </div>
+      </section>
+
+      <section class="list-panel">
+        <div class="list-head">
+          <h2>邮件列表</h2>
+          <div class="badge">4</div>
+        </div>
+
+        <div class="mail-list">
+          <article class="mail-card active">
+            <div class="mail-main">
+              <span class="dot"></span>
+              <div>
+                <h3 class="mail-title">Your sign in code</h3>
+                <div class="mail-from">Notion · team@notion.so</div>
+                <div class="mail-preview">
+                  Welcome back. Your sign in code is 482913. This email was forwarded via
+                  DuckDuckGo Email Protection.
+                </div>
+              </div>
+              <div class="mail-time">刚刚</div>
+            </div>
+
+            <div class="mail-detail">
+              <div class="detail-row">
+                <div class="detail-box address">
+                  <span>收件地址</span>
+                  <strong>fancy-cope-ravine@duck.com</strong>
+                </div>
+                <div class="detail-box time">
+                  <span>接收时间</span>
+                  <strong>2026/4/3 22:40</strong>
+                </div>
+              </div>
+
+              <div class="raw">
+                <span>Raw Preview</span>
+                <pre>From: Notion &lt;team@notion.so&gt;
+Subject: Your sign in code
+
+Welcome back. Your one-time sign in code is 482913.</pre>
+              </div>
+            </div>
+          </article>
+
+          <article class="mail-card">
+            <div class="mail-main">
+              <span class="dot" style="opacity: 0.4;"></span>
+              <div>
+                <h3 class="mail-title">Verify your email</h3>
+                <div class="mail-from">Figma · no-reply@figma.com</div>
+                <div class="mail-preview">
+                  Please verify your email address to continue. Compact mode keeps only the most
+                  useful summary lines.
+                </div>
+              </div>
+              <div class="mail-time">7 分钟前</div>
+            </div>
+          </article>
+
+          <article class="mail-card">
+            <div class="mail-main">
+              <span class="dot" style="opacity: 0.4;"></span>
+              <div>
+                <h3 class="mail-title">Welcome to Linear</h3>
+                <div class="mail-from">Linear · hello@linear.app</div>
+                <div class="mail-preview">
+                  Your workspace has been created. Compact layout gives more room to the list
+                  itself instead of the header area.
+                </div>
+              </div>
+              <div class="mail-time">18 分钟前</div>
+            </div>
+          </article>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
