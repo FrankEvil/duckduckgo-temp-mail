@@ -1,7 +1,7 @@
 import { DEFAULT_DUCK_CONFIG, DEFAULT_TEMP_MAIL_CONFIG } from "../config/defaults";
 import { DuckAlias, DuckConfig } from "../types/duck";
 import { MailSummary } from "../types/mail";
-import { DuckProfile } from "../types/profile";
+import { DuckProfile, ProfileMode } from "../types/profile";
 import { TempMailConfig, TempMailInbox } from "../types/tempMail";
 import { STORAGE_KEYS } from "./keys";
 
@@ -41,6 +41,7 @@ export function createEmptyProfile(name?: string): DuckProfile {
   return {
     id: createProfileId(),
     name: name || `Duck ${new Date().toLocaleDateString()}`,
+    mode: "duck",
     duck: { ...DEFAULT_DUCK_CONFIG },
     tempMail: { ...DEFAULT_TEMP_MAIL_CONFIG },
     inbox: null,
@@ -54,11 +55,16 @@ export function createEmptyProfile(name?: string): DuckProfile {
   };
 }
 
-function normalizeProfiles(profiles: DuckProfile[]) {
-  return profiles.map((profile) => ({
-    ...profile,
-    readMessageIds: Array.isArray(profile.readMessageIds) ? profile.readMessageIds : []
-  }));
+function normalizeProfiles(profiles: DuckProfile[]): DuckProfile[] {
+  return profiles.map((profile): DuckProfile => {
+    const mode: ProfileMode = profile.mode === "tempmail" ? "tempmail" : "duck";
+
+    return {
+      ...profile,
+      mode,
+      readMessageIds: Array.isArray(profile.readMessageIds) ? profile.readMessageIds : []
+    };
+  });
 }
 
 async function migrateLegacyProfiles() {
@@ -84,6 +90,7 @@ async function migrateLegacyProfiles() {
   const profile = createEmptyProfile("默认 Duck");
   profile.duck = duckConfig || { ...DEFAULT_DUCK_CONFIG };
   profile.tempMail = tempMailConfig || { ...DEFAULT_TEMP_MAIL_CONFIG };
+  profile.mode = "duck";
   profile.inbox = tempMailInbox || null;
   profile.aliases = aliases || [];
   profile.currentAliasId = profile.aliases[0]?.id ?? null;

@@ -1,20 +1,24 @@
-import { ChangeEvent, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-import { CardSection } from "../shared/components/CardSection";
 import { createDuckAlias } from "../features/ddg/client";
 import {
   createTempMailInbox,
   fetchTempMailMessageSummaries
 } from "../features/temp-mail/client";
 import {
+  PopupTheme,
   createEmptyProfile,
   loadActiveProfileId,
+  loadPopupTheme,
   loadProfiles,
   saveActiveProfileId,
+  savePopupTheme,
   saveProfiles
 } from "../shared/storage/local";
 import { DuckAlias } from "../shared/types/duck";
-import { DuckProfile } from "../shared/types/profile";
+import { MailSummary } from "../shared/types/mail";
+import { DuckProfile, ProfileMode } from "../shared/types/profile";
+import { TempMailInbox } from "../shared/types/tempMail";
 
 type Notice = {
   type: "success" | "error" | "info";
@@ -22,6 +26,7 @@ type Notice = {
 };
 
 type BusyAction = "save" | "alias" | "inbox" | "sync" | null;
+type PanelView = "edit" | "status";
 
 function normalizeUrl(value: string) {
   return value.trim().replace(/\/+$/, "");
@@ -51,18 +56,291 @@ function getSelectedProfile(profiles: DuckProfile[], selectedProfileId: string |
   return profiles.find((item) => item.id === selectedProfileId) ?? profiles[0] ?? null;
 }
 
+function getModeLabel(mode: ProfileMode) {
+  return mode === "duck" ? "DuckDuckGo 转发" : "Temp Mail 直连";
+}
+
+function getActiveAlias(profile: DuckProfile) {
+  return (
+    profile.aliases.find((item) => item.id === profile.currentAliasId) ||
+    profile.aliases[0] ||
+    null
+  );
+}
+
+function getProfileAddress(profile: DuckProfile) {
+  if (profile.mode === "duck") {
+    return getActiveAlias(profile)?.address || "尚未生成 Duck 地址";
+  }
+
+  return profile.inbox?.address || "尚未创建收件箱";
+}
+
+function getProfileSummaryLine(profile: DuckProfile) {
+  if (profile.mode === "duck") {
+    return getActiveAlias(profile)?.address || "Duck token + Temp Mail 收件箱";
+  }
+
+  return profile.inbox?.address || "Temp Mail 直连";
+}
+
+function getUnreadCount(profile: DuckProfile) {
+  return profile.messages.filter((message) => !profile.readMessageIds.includes(message.id)).length;
+}
+
+function formatAbsoluteDateTime(value: string | null) {
+  if (!value) {
+    return "未同步";
+  }
+
+  const plainMatch = value.match(
+    /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/
+  );
+
+  if (plainMatch) {
+    const [, year, month, day, hour, minute, second] = plainMatch;
+    return `${year}-${month}-${day} ${hour}:${minute}:${second}`;
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  })
+    .format(date)
+    .replace(/\//g, "-");
+}
+
+function formatListDateTime(value: string) {
+  const absolute = formatAbsoluteDateTime(value);
+  const match = absolute.match(/^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})$/);
+
+  if (!match) {
+    return {
+      date: "",
+      time: absolute
+    };
+  }
+
+  return {
+    date: match[1],
+    time: match[2]
+  };
+}
+
+function buildInboxPatch(existingInbox: TempMailInbox | null, partial: Partial<TempMailInbox>) {
+  return {
+    address: partial.address ?? existingInbox?.address ?? "",
+    addressJwt: partial.addressJwt ?? existingInbox?.addressJwt ?? "",
+    createdAt: partial.createdAt ?? existingInbox?.createdAt ?? new Date().toISOString()
+  };
+}
+
+function extractInboxDomain(address: string) {
+  const trimmed = address.trim();
+  const match = trimmed.match(/@([^@\s]+)$/);
+  return match?.[1]?.trim() || "";
+}
+
+function inferTempMailBaseUrl(address: string, fallback: string) {
+  if (fallback.trim()) {
+    return normalizeUrl(fallback);
+  }
+
+  const domain = extractInboxDomain(address);
+  if (!domain) {
+    return "";
+  }
+
+  if (domain.startsWith("temp-email.")) {
+    return `https://${domain}`;
+  }
+
+  return `https://temp-email.${domain}`;
+}
+
+function patchDuckProfileTempMailFromInbox(profile: DuckProfile) {
+  if (profile.mode !== "duck") {
+    return profile;
+  }
+
+  const address = profile.inbox?.address || "";
+  const inferredDomain = extractInboxDomain(address);
+  const inferredBaseUrl = inferTempMailBaseUrl(address, profile.tempMail.baseUrl);
+
+  return {
+    ...profile,
+    tempMail: {
+      ...profile.tempMail,
+      baseUrl: inferredBaseUrl,
+      domain: profile.tempMail.domain.trim() || inferredDomain
+    }
+  };
+}
+
+function sanitizeEmailHtml(html: string) {
+  const parser = new DOMParser();
+  const document = parser.parseFromString(html, "text/html");
+  const allowedTags = new Set([
+    "a",
+    "b",
+    "blockquote",
+    "br",
+    "code",
+    "div",
+    "em",
+    "hr",
+    "li",
+    "ol",
+    "p",
+    "pre",
+    "span",
+    "strong",
+    "table",
+    "tbody",
+    "td",
+    "th",
+    "thead",
+    "tr",
+    "u",
+    "ul"
+  ]);
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+  const elements: Element[] = [];
+
+  while (walker.nextNode()) {
+    elements.push(walker.currentNode as Element);
+  }
+
+  for (const element of elements) {
+    const tagName = element.tagName.toLowerCase();
+
+    if (!allowedTags.has(tagName)) {
+      element.replaceWith(...Array.from(element.childNodes));
+      continue;
+    }
+
+    for (const attribute of Array.from(element.attributes)) {
+      const attributeName = attribute.name.toLowerCase();
+      const attributeValue = attribute.value.trim();
+
+      if (attributeName.startsWith("on") || attributeName === "style" || attributeName === "src") {
+        element.removeAttribute(attribute.name);
+        continue;
+      }
+
+      if (attributeName === "href") {
+        if (!/^https?:/i.test(attributeValue) && !/^mailto:/i.test(attributeValue)) {
+          element.removeAttribute(attribute.name);
+          continue;
+        }
+
+        element.setAttribute("target", "_blank");
+        element.setAttribute("rel", "noreferrer noopener");
+        continue;
+      }
+
+      if (!["href", "target", "rel", "colspan", "rowspan"].includes(attributeName)) {
+        element.removeAttribute(attribute.name);
+      }
+    }
+  }
+
+  return document.body.innerHTML.trim();
+}
+
+function StatusMailList({
+  messages,
+  readMessageIds
+}: {
+  messages: MailSummary[];
+  readMessageIds: string[];
+}) {
+  if (!messages.length) {
+    return (
+      <div className="mode-empty-state">
+        当前还没有同步到邮件。进入状态页后可以直接点“立即同步”查看最新内容。
+      </div>
+    );
+  }
+
+  return (
+    <div className="mode-mail-list">
+      {messages.map((message) => {
+        const datetime = formatListDateTime(message.receivedAt);
+        const isUnread = !readMessageIds.includes(message.id);
+
+        return (
+          <details key={message.id} className={`mode-mail-card ${isUnread ? "is-unread" : ""}`}>
+            <summary className="mode-mail-summary">
+              <div className="mode-mail-main">
+                <div className="mode-mail-copy">
+                  <div className="mode-mail-title-row">
+                    <h4 className="mode-mail-title">{message.subject || "无主题"}</h4>
+                    {isUnread ? <span className="mode-mail-badge">未读</span> : null}
+                  </div>
+                  <div className="mode-mail-from">{message.from || "未知发件人"}</div>
+                  <div className="mode-mail-preview">{message.preview || "暂无摘要"}</div>
+                </div>
+                <div className="mode-mail-side">
+                  {datetime.date ? <span>{datetime.date}</span> : null}
+                  <strong>{datetime.time}</strong>
+                </div>
+              </div>
+            </summary>
+
+            <div className="mode-mail-detail">
+              <div className="mode-mail-route">
+                <span>{message.sourceAddress || message.from || "未知发件人"}</span>
+                <span className="mode-mail-route-arrow">→</span>
+                <span>{message.recipientAddress || message.address}</span>
+              </div>
+
+              {message.htmlContent ? (
+                <div
+                  className="mode-mail-body html"
+                  dangerouslySetInnerHTML={{
+                    __html: sanitizeEmailHtml(message.htmlContent)
+                  }}
+                />
+              ) : (
+                <div className="mode-mail-body text">
+                  {message.content || message.preview || "暂无正文"}
+                </div>
+              )}
+            </div>
+          </details>
+        );
+      })}
+    </div>
+  );
+}
+
 export function OptionsApp() {
   const [profiles, setProfiles] = useState<DuckProfile[]>([]);
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [loading, setLoading] = useState(true);
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
+  const [theme, setTheme] = useState<PopupTheme>("dark");
+  const [panelView, setPanelView] = useState<PanelView>("edit");
 
   useEffect(() => {
     async function hydrate() {
-      const [storedProfiles, activeProfileId] = await Promise.all([
+      const [storedProfiles, activeProfileId, storedTheme] = await Promise.all([
         loadProfiles(),
-        loadActiveProfileId()
+        loadActiveProfileId(),
+        loadPopupTheme()
       ]);
 
       const fallbackProfiles = storedProfiles.length
@@ -75,6 +353,7 @@ export function OptionsApp() {
 
       setProfiles(fallbackProfiles);
       setSelectedProfileId(nextSelectedId);
+      setTheme(storedTheme);
 
       if (!storedProfiles.length) {
         await saveProfiles(fallbackProfiles);
@@ -87,10 +366,32 @@ export function OptionsApp() {
     void hydrate();
   }, []);
 
-  const selectedProfile = useMemo(
-    () => getSelectedProfile(profiles, selectedProfileId),
-    [profiles, selectedProfileId]
-  );
+  useEffect(() => {
+    if (!notice) {
+      return undefined;
+    }
+
+    const timeout = window.setTimeout(() => setNotice(null), 2600);
+    return () => window.clearTimeout(timeout);
+  }, [notice]);
+
+  const selectedProfile = getSelectedProfile(profiles, selectedProfileId);
+
+  const stats = useMemo(() => {
+    if (!selectedProfile) {
+      return {
+        total: 0,
+        unread: 0,
+        currentAddress: "未选择配置"
+      };
+    }
+
+    return {
+      total: selectedProfile.messages.length,
+      unread: getUnreadCount(selectedProfile),
+      currentAddress: getProfileAddress(selectedProfile)
+    };
+  }, [selectedProfile]);
 
   function updateSelectedProfile(updater: (profile: DuckProfile) => DuckProfile) {
     setProfiles((current) =>
@@ -107,11 +408,24 @@ export function OptionsApp() {
     await saveActiveProfileId(nextSelectedId);
   }
 
+  async function handleToggleTheme() {
+    const nextTheme = theme === "dark" ? "light" : "dark";
+    setTheme(nextTheme);
+    await savePopupTheme(nextTheme);
+  }
+
+  async function handleSelectProfile(profileId: string) {
+    setSelectedProfileId(profileId);
+    setPanelView("edit");
+    await saveActiveProfileId(profileId);
+  }
+
   async function handleCreateProfile() {
-    const profile = createEmptyProfile(`Duck ${profiles.length + 1}`);
+    const profile = createEmptyProfile(`配置 ${profiles.length + 1}`);
     const nextProfiles = [profile, ...profiles];
     await persistProfiles(nextProfiles, profile.id);
-    setNotice({ type: "success", message: "已新增一个 Duck 配置。" });
+    setPanelView("edit");
+    setNotice({ type: "success", message: "已新增一个配置。" });
   }
 
   async function handleSaveProfile() {
@@ -120,20 +434,22 @@ export function OptionsApp() {
     }
 
     if (!selectedProfile.name.trim()) {
-      setNotice({ type: "error", message: "请先填写 Duck 名称。" });
+      setNotice({ type: "error", message: "请先填写名称。" });
       return;
     }
 
-    if (!selectedProfile.duck.token.trim()) {
-      setNotice({ type: "error", message: "请先填写 Duck token。" });
+    if (selectedProfile.mode === "duck" && !selectedProfile.duck.token.trim()) {
+      setNotice({ type: "error", message: "Duck 模式下请先填写 Duck token。" });
       return;
     }
 
-    if (!selectedProfile.tempMail.baseUrl.trim() || !selectedProfile.tempMail.domain.trim()) {
-      setNotice({
-        type: "error",
-        message: "请至少填写 Temp Mail Base URL 和 Domain。"
-      });
+    if (selectedProfile.mode === "tempmail" && !selectedProfile.tempMail.baseUrl.trim()) {
+      setNotice({ type: "error", message: "请先填写 Temp Mail Base URL。" });
+      return;
+    }
+
+    if (selectedProfile.mode === "tempmail" && !selectedProfile.tempMail.domain.trim()) {
+      setNotice({ type: "error", message: "请先填写 Temp Mail Domain。" });
       return;
     }
 
@@ -145,43 +461,47 @@ export function OptionsApp() {
           return profile;
         }
 
+        const normalizedProfile = patchDuckProfileTempMailFromInbox(selectedProfile);
+
         return updateProfileTimestamp({
-          ...selectedProfile,
+          ...normalizedProfile,
           name: selectedProfile.name.trim(),
           duck: {
-            ...selectedProfile.duck,
-            apiBaseUrl: normalizeUrl(selectedProfile.duck.apiBaseUrl),
-            token: selectedProfile.duck.token.trim(),
-            aliasDomain: selectedProfile.duck.aliasDomain.trim()
+            ...normalizedProfile.duck,
+            apiBaseUrl: normalizeUrl(normalizedProfile.duck.apiBaseUrl),
+            token: normalizedProfile.duck.token.trim(),
+            aliasDomain: normalizedProfile.duck.aliasDomain.trim()
           },
           tempMail: {
-            ...selectedProfile.tempMail,
-            baseUrl: normalizeUrl(selectedProfile.tempMail.baseUrl),
-            adminAuth: selectedProfile.tempMail.adminAuth.trim(),
-            customAuth: selectedProfile.tempMail.customAuth.trim(),
-            domain: selectedProfile.tempMail.domain.trim(),
-            namePrefix: selectedProfile.tempMail.namePrefix.trim(),
+            ...normalizedProfile.tempMail,
+            baseUrl: normalizeUrl(normalizedProfile.tempMail.baseUrl),
+            adminAuth: normalizedProfile.tempMail.adminAuth.trim(),
+            customAuth: normalizedProfile.tempMail.customAuth.trim(),
+            domain: normalizedProfile.tempMail.domain.trim(),
+            namePrefix: normalizedProfile.tempMail.namePrefix.trim(),
             pollIntervalMs: parseNumber(
-              String(selectedProfile.tempMail.pollIntervalMs),
-              selectedProfile.tempMail.pollIntervalMs
+              String(normalizedProfile.tempMail.pollIntervalMs),
+              normalizedProfile.tempMail.pollIntervalMs
             ),
             pollTimeoutMs: parseNumber(
-              String(selectedProfile.tempMail.pollTimeoutMs),
-              selectedProfile.tempMail.pollTimeoutMs
+              String(normalizedProfile.tempMail.pollTimeoutMs),
+              normalizedProfile.tempMail.pollTimeoutMs
             )
           },
-          inbox: selectedProfile.inbox
-            ? {
-                ...selectedProfile.inbox,
-                address: selectedProfile.inbox.address.trim(),
-                addressJwt: selectedProfile.inbox.addressJwt.trim()
-              }
-            : null
+          inbox:
+            normalizedProfile.inbox &&
+            (normalizedProfile.inbox.address.trim() || normalizedProfile.inbox.addressJwt.trim())
+              ? {
+                  ...normalizedProfile.inbox,
+                  address: normalizedProfile.inbox.address.trim(),
+                  addressJwt: normalizedProfile.inbox.addressJwt.trim()
+                }
+              : null
         });
       });
 
       await persistProfiles(nextProfiles, selectedProfile.id);
-      setNotice({ type: "success", message: "当前 Duck 配置已保存。" });
+      setNotice({ type: "success", message: "当前配置已保存。" });
     } catch (error) {
       setNotice({
         type: "error",
@@ -228,7 +548,12 @@ export function OptionsApp() {
     }
 
     if (!selectedProfile.tempMail.baseUrl.trim() || !selectedProfile.tempMail.domain.trim()) {
-      setNotice({ type: "error", message: "请先填写并保存 Temp Mail 配置。" });
+      setNotice({ type: "error", message: "请先填写 Temp Mail Base URL 和 Domain。" });
+      return;
+    }
+
+    if (!selectedProfile.tempMail.adminAuth.trim()) {
+      setNotice({ type: "error", message: "创建收件箱前请先填写 Admin Auth。" });
       return;
     }
 
@@ -259,7 +584,20 @@ export function OptionsApp() {
 
   async function handleSyncMessages() {
     if (!selectedProfile || !selectedProfile.inbox?.addressJwt.trim()) {
-      setNotice({ type: "error", message: "请先填写或创建 Temp Mail 收件箱 token。" });
+      setNotice({ type: "error", message: "请先创建或填写收件箱信息。" });
+      return;
+    }
+
+    const normalizedProfile = patchDuckProfileTempMailFromInbox(selectedProfile);
+
+    if (!normalizedProfile.tempMail.baseUrl.trim()) {
+      setNotice({ type: "error", message: "无法识别 Temp Mail 地址对应的接口地址，请补充完整收件信息。" });
+      return;
+    }
+
+    const inbox = normalizedProfile.inbox;
+    if (!inbox?.addressJwt.trim()) {
+      setNotice({ type: "error", message: "请先填写有效的 Temp Mail JWT。" });
       return;
     }
 
@@ -267,15 +605,19 @@ export function OptionsApp() {
 
     try {
       const messages = await fetchTempMailMessageSummaries({
-        ...selectedProfile.tempMail,
-        ...selectedProfile.inbox
+        ...normalizedProfile.tempMail,
+        ...inbox
       });
 
       const nextProfiles = profiles.map((profile) =>
         profile.id === selectedProfile.id
           ? updateProfileTimestamp({
               ...profile,
+              tempMail: normalizedProfile.tempMail,
               messages,
+              readMessageIds: profile.readMessageIds.filter((id) =>
+                messages.some((message) => message.id === id)
+              ),
               lastSyncedAt: new Date().toISOString()
             })
           : profile
@@ -299,347 +641,527 @@ export function OptionsApp() {
   if (loading || !selectedProfile) {
     return (
       <main className="page-shell">
-        <div className="status-banner info">正在加载 Duck 配置...</div>
+        <div className="status-banner info">正在加载设置页...</div>
       </main>
     );
   }
 
-  const currentAlias =
-    selectedProfile.aliases.find((item) => item.id === selectedProfile.currentAliasId) ||
-    selectedProfile.aliases[0] ||
-    null;
+  const currentAlias = getActiveAlias(selectedProfile);
 
   return (
-    <main className="page-shell">
-      <header className="page-header">
-        <p className="app-eyebrow">Settings</p>
-        <h1>Duck 配置与收件设置</h1>
-        <p className="page-description">
-          一个 Duck 对应一个 Temp Mail 收件配置。主页只负责切换和看邮件，这里负责所有配置与同步动作。
-        </p>
-      </header>
-
-      {notice ? <div className={`status-banner ${notice.type}`}>{notice.message}</div> : null}
-
-      <div className="settings-layout">
-        <aside className="profile-sidebar">
-          <div className="sidebar-head">
-            <strong>Duck 列表</strong>
-            <button className="ghost-button" onClick={() => void handleCreateProfile()}>
-              新增 Duck
+    <main className={`mode-settings-page ${theme === "light" ? "theme-light" : "theme-dark"}`}>
+      <div className="mode-settings-layout">
+        <aside className="mode-shell mode-sidebar">
+          <div className="mode-top-row">
+            <div className="mode-brand">
+              <span className="mode-eyebrow">Duck Mailbox</span>
+              <strong>配置列表</strong>
+            </div>
+            <button className="mode-ghost-btn" onClick={() => void handleCreateProfile()}>
+              新增
             </button>
           </div>
-          <div className="profile-list">
+
+          <div className="mode-view-switch">
+            <button
+              type="button"
+              className={`mode-view-btn ${panelView === "edit" ? "is-active" : ""}`}
+              onClick={() => setPanelView("edit")}
+            >
+              编辑配置
+            </button>
+            <button
+              type="button"
+              className={`mode-view-btn ${panelView === "status" ? "is-active" : ""}`}
+              onClick={() => setPanelView("status")}
+            >
+              状态信息
+            </button>
+          </div>
+
+          <div className="mode-profile-list">
             {profiles.map((profile) => (
               <button
                 key={profile.id}
                 type="button"
-                className={`profile-chip ${profile.id === selectedProfile.id ? "is-active" : ""}`}
-                onClick={() => {
-                  setSelectedProfileId(profile.id);
-                  void saveActiveProfileId(profile.id);
-                }}
+                className={`mode-profile-item ${profile.id === selectedProfile.id ? "is-active" : ""}`}
+                onClick={() => void handleSelectProfile(profile.id)}
               >
                 <strong>{profile.name}</strong>
-                <span>{profile.aliases[0]?.address || "还没有 Duck 地址"}</span>
+                <span>{getModeLabel(profile.mode)}</span>
+                <em>{getProfileSummaryLine(profile)}</em>
               </button>
             ))}
           </div>
         </aside>
 
-        <div className="settings-main">
-          <CardSection
-            title="当前 Duck"
-            description="每个 Duck Profile 绑定一套 Duck token 和 Temp Mail 收件配置。"
-          >
-            <div className="field-grid two-columns">
-              <label className="field-card">
-                <span>Duck 名称</span>
-                <input
-                  value={selectedProfile.name}
-                  onChange={(event) =>
-                    updateSelectedProfile((profile) => ({
-                      ...profile,
-                      name: event.target.value
-                    }))
-                  }
-                />
-              </label>
-              <label className="field-card">
-                <span>当前 Duck 地址</span>
-                <input value={currentAlias?.address || "还没有生成"} readOnly />
-              </label>
+        <section className="mode-shell mode-main">
+          <div className="mode-toolbar">
+            <div className="mode-brand">
+              <span className="mode-eyebrow">Mode Based Settings</span>
+              <strong>{panelView === "edit" ? "配置编辑" : "状态信息"}</strong>
+              <p>
+                {panelView === "edit"
+                  ? "默认进入配置编辑，只处理参数本身。"
+                  : "把当前配置的运行状态、同步结果和邮件内容集中查看。"}
+              </p>
             </div>
-          </CardSection>
 
-          <CardSection
-            title="DuckDuckGo 配置"
-            description="用于生成当前 Duck 对应的 `@duck.com` 别名。"
-          >
-            <div className="field-grid two-columns">
-              <label className="field-card">
-                <span>API Base URL</span>
-                <input
-                  value={selectedProfile.duck.apiBaseUrl}
-                  onChange={(event) =>
-                    updateSelectedProfile((profile) => ({
-                      ...profile,
-                      duck: {
-                        ...profile.duck,
-                        apiBaseUrl: event.target.value
-                      }
-                    }))
-                  }
-                />
-              </label>
-              <label className="field-card">
-                <span>Token</span>
-                <input
-                  value={selectedProfile.duck.token}
-                  onChange={(event) =>
-                    updateSelectedProfile((profile) => ({
-                      ...profile,
-                      duck: {
-                        ...profile.duck,
-                        token: event.target.value
-                      }
-                    }))
-                  }
-                />
-              </label>
-              <label className="field-card">
-                <span>Alias Domain</span>
-                <input
-                  value={selectedProfile.duck.aliasDomain}
-                  onChange={(event) =>
-                    updateSelectedProfile((profile) => ({
-                      ...profile,
-                      duck: {
-                        ...profile.duck,
-                        aliasDomain: event.target.value
-                      }
-                    }))
-                  }
-                />
-              </label>
+            <div className="mode-toolbar-actions">
+              <div className="mode-theme-pill">主题跟随 popup</div>
+              <button className="mode-icon-btn" onClick={() => void handleToggleTheme()} title="切换主题">
+                ◐
+              </button>
             </div>
-          </CardSection>
+          </div>
 
-          <CardSection
-            title="Temp Mail 配置"
-            description="当前只支持 Temp Mail 一种收件协议。"
-          >
-            <div className="field-grid two-columns">
-              <label className="field-card">
-                <span>Base URL</span>
-                <input
-                  value={selectedProfile.tempMail.baseUrl}
-                  onChange={(event) =>
-                    updateSelectedProfile((profile) => ({
-                      ...profile,
-                      tempMail: {
-                        ...profile.tempMail,
-                        baseUrl: event.target.value
-                      }
-                    }))
-                  }
-                />
-              </label>
-              <label className="field-card">
-                <span>Admin Auth</span>
-                <input
-                  value={selectedProfile.tempMail.adminAuth}
-                  onChange={(event) =>
-                    updateSelectedProfile((profile) => ({
-                      ...profile,
-                      tempMail: {
-                        ...profile.tempMail,
-                        adminAuth: event.target.value
-                      }
-                    }))
-                  }
-                />
-              </label>
-              <label className="field-card">
-                <span>Custom Auth</span>
-                <input
-                  value={selectedProfile.tempMail.customAuth}
-                  onChange={(event) =>
-                    updateSelectedProfile((profile) => ({
-                      ...profile,
-                      tempMail: {
-                        ...profile.tempMail,
-                        customAuth: event.target.value
-                      }
-                    }))
-                  }
-                />
-              </label>
-              <label className="field-card">
-                <span>Domain</span>
-                <input
-                  value={selectedProfile.tempMail.domain}
-                  onChange={(event) =>
-                    updateSelectedProfile((profile) => ({
-                      ...profile,
-                      tempMail: {
-                        ...profile.tempMail,
-                        domain: event.target.value
-                      }
-                    }))
-                  }
-                />
-              </label>
-              <label className="field-card">
-                <span>Name Prefix</span>
-                <input
-                  value={selectedProfile.tempMail.namePrefix}
-                  onChange={(event) =>
-                    updateSelectedProfile((profile) => ({
-                      ...profile,
-                      tempMail: {
-                        ...profile.tempMail,
-                        namePrefix: event.target.value
-                      }
-                    }))
-                  }
-                />
-              </label>
-              <label className="field-card">
-                <span>轮询间隔（ms）</span>
-                <input
-                  type="number"
-                  value={selectedProfile.tempMail.pollIntervalMs}
-                  onChange={(event) =>
-                    updateSelectedProfile((profile) => ({
-                      ...profile,
-                      tempMail: {
-                        ...profile.tempMail,
-                        pollIntervalMs: parseNumber(
-                          event.target.value,
-                          profile.tempMail.pollIntervalMs
-                        )
-                      }
-                    }))
-                  }
-                />
-              </label>
-              <label className="field-card">
-                <span>轮询超时（ms）</span>
-                <input
-                  type="number"
-                  value={selectedProfile.tempMail.pollTimeoutMs}
-                  onChange={(event) =>
-                    updateSelectedProfile((profile) => ({
-                      ...profile,
-                      tempMail: {
-                        ...profile.tempMail,
-                        pollTimeoutMs: parseNumber(
-                          event.target.value,
-                          profile.tempMail.pollTimeoutMs
-                        )
-                      }
-                    }))
-                  }
-                />
-              </label>
-            </div>
-            <label className="checkbox-row">
-              <input
-                type="checkbox"
-                checked={selectedProfile.tempMail.enablePrefix}
-                onChange={(event: ChangeEvent<HTMLInputElement>) =>
-                  updateSelectedProfile((profile) => ({
-                    ...profile,
-                    tempMail: {
-                      ...profile.tempMail,
-                      enablePrefix: event.target.checked
+          {notice ? <div className={`mode-notice ${notice.type}`}>{notice.message}</div> : null}
+
+          {panelView === "edit" ? (
+            <>
+              <section className="mode-shell-inner mode-summary">
+                <div className="mode-top-row">
+                  <div>
+                    <div className="mode-summary-title">编辑配置</div>
+                    <div className="mode-summary-desc">当前配置默认只展示编辑项，不显示状态卡片和邮件列表。</div>
+                  </div>
+                  <div className="mode-action-row">
+                    <button className="mode-secondary-btn" onClick={() => void handleSaveProfile()}>
+                      {busyAction === "save" ? "保存中..." : "保存当前配置"}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mode-summary-inline">
+                  <span>当前名称：{selectedProfile.name || "未命名"}</span>
+                  <span>当前模式：{getModeLabel(selectedProfile.mode)}</span>
+                </div>
+              </section>
+
+              <section className="mode-shell-inner mode-section">
+                <div className="mode-section-head">
+                  <div>
+                    <div className="mode-section-title">接入方式</div>
+                    <div className="mode-section-desc">先选模式，再显示这套模式真正需要配置的内容。</div>
+                  </div>
+                </div>
+
+                <div className="mode-card-grid">
+                  <button
+                    type="button"
+                    className={`mode-select-card ${selectedProfile.mode === "duck" ? "is-active" : ""}`}
+                    onClick={() =>
+                      updateSelectedProfile((profile) =>
+                        updateProfileTimestamp({
+                          ...profile,
+                          mode: "duck"
+                        })
+                      )
                     }
-                  }))
-                }
-              />
-              <span>创建地址时启用前缀</span>
-            </label>
-          </CardSection>
+                  >
+                    <strong>1. DuckDuckGo 转发</strong>
+                    <p>Duck 负责生成别名，Temp Mail 负责查看转发后的邮件。</p>
+                    <span>Duck token + Temp Mail 收件箱</span>
+                  </button>
 
-          <CardSection
-            title="收件箱 Token"
-            description="你也可以手动填 Temp Mail 的收件邮箱和 token，不一定要自动创建。这里要填邮箱地址，不要填站点 URL。"
-          >
-            <div className="field-grid two-columns">
-              <label className="field-card">
-                <span>Temp Mail Address</span>
-                <input
-                  value={selectedProfile.inbox?.address || ""}
-                  onChange={(event) =>
-                    updateSelectedProfile((profile) => ({
-                      ...profile,
-                      inbox: {
-                        address: event.target.value,
-                        addressJwt: profile.inbox?.addressJwt || "",
-                        createdAt: profile.inbox?.createdAt || new Date().toISOString()
-                      }
-                    }))
-                  }
-                  placeholder="例如 inbox@temp-email.evil.de5.net"
-                />
-              </label>
-              <label className="field-card">
-                <span>Temp Mail Token / JWT</span>
-                <input
-                  value={selectedProfile.inbox?.addressJwt || ""}
-                  onChange={(event) =>
-                    updateSelectedProfile((profile) => ({
-                      ...profile,
-                      inbox: {
-                        address: profile.inbox?.address || "",
-                        addressJwt: event.target.value,
-                        createdAt: profile.inbox?.createdAt || new Date().toISOString()
-                      }
-                    }))
-                  }
-                  placeholder="粘贴 addressJwt"
-                />
-              </label>
-            </div>
-          </CardSection>
+                  <button
+                    type="button"
+                    className={`mode-select-card ${selectedProfile.mode === "tempmail" ? "is-active" : ""}`}
+                    onClick={() =>
+                      updateSelectedProfile((profile) =>
+                        updateProfileTimestamp({
+                          ...profile,
+                          mode: "tempmail"
+                        })
+                      )
+                    }
+                  >
+                    <strong>2. Temp Mail 直连</strong>
+                    <p>直接按 Temp Mail 协议配置，点击创建收件箱后自动拿到地址和 JWT。</p>
+                    <span>Base URL + Admin Auth + Domain</span>
+                  </button>
+                </div>
+              </section>
 
-          <CardSection
-            title="操作区"
-            description="所有生成、收件箱创建和同步操作都放在设置页。"
-          >
-            <div className="action-row">
-              <button
-                className="primary-button"
-                disabled={busyAction !== null}
-                onClick={() => void handleSaveProfile()}
-              >
-                {busyAction === "save" ? "保存中..." : "保存当前 Duck"}
-              </button>
-              <button
-                className="secondary-button"
-                disabled={busyAction !== null}
-                onClick={() => void handleGenerateAlias()}
-              >
-                {busyAction === "alias" ? "生成中..." : "生成 Duck 地址"}
-              </button>
-              <button
-                className="secondary-button"
-                disabled={busyAction !== null}
-                onClick={() => void handleCreateInbox()}
-              >
-                {busyAction === "inbox" ? "创建中..." : "自动创建 Temp 收件箱"}
-              </button>
-              <button
-                className="secondary-button"
-                disabled={busyAction !== null}
-                onClick={() => void handleSyncMessages()}
-              >
-                {busyAction === "sync" ? "同步中..." : "同步当前 Duck 邮件"}
-              </button>
-            </div>
-          </CardSection>
-        </div>
+              {selectedProfile.mode === "duck" ? (
+                <section className="mode-shell-inner mode-section">
+                  <div className="mode-section-head">
+                    <div>
+                      <div className="mode-section-title">DuckDuckGo 转发配置</div>
+                      <div className="mode-section-desc">
+                        Duck 只负责生成别名；Temp Mail 在这里仅作为“查看转发邮件”的收件箱。
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mode-field-grid">
+                    <label className="mode-field span-4">
+                      <span>名称</span>
+                      <input
+                        className="mode-input"
+                        value={selectedProfile.name}
+                        onChange={(event) =>
+                          updateSelectedProfile((profile) => ({
+                            ...profile,
+                            name: event.target.value
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="mode-field span-4">
+                      <span>Duck Alias Domain</span>
+                      <input
+                        className="mode-input"
+                        value={selectedProfile.duck.aliasDomain}
+                        onChange={(event) =>
+                          updateSelectedProfile((profile) => ({
+                            ...profile,
+                            duck: {
+                              ...profile.duck,
+                              aliasDomain: event.target.value
+                            }
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="mode-field span-4">
+                      <span>Duck API Base URL</span>
+                      <input
+                        className="mode-input"
+                        value={selectedProfile.duck.apiBaseUrl}
+                        onChange={(event) =>
+                          updateSelectedProfile((profile) => ({
+                            ...profile,
+                            duck: {
+                              ...profile.duck,
+                              apiBaseUrl: event.target.value
+                            }
+                          }))
+                        }
+                      />
+                    </label>
+
+                    <label className="mode-field span-12">
+                      <span>Duck Token</span>
+                      <input
+                        className="mode-input"
+                        value={selectedProfile.duck.token}
+                        onChange={(event) =>
+                          updateSelectedProfile((profile) => ({
+                            ...profile,
+                            duck: {
+                              ...profile.duck,
+                              token: event.target.value
+                            }
+                          }))
+                        }
+                      />
+                    </label>
+
+                    <label className="mode-field span-6">
+                      <span>Temp Mail Address</span>
+                      <input
+                        className="mode-input"
+                        value={selectedProfile.inbox?.address || ""}
+                        onChange={(event) =>
+                          updateSelectedProfile((profile) => ({
+                            ...profile,
+                            inbox: buildInboxPatch(profile.inbox, {
+                              address: event.target.value
+                            })
+                          }))
+                        }
+                        placeholder="duckduckgo@example.com"
+                      />
+                    </label>
+                    <label className="mode-field span-6">
+                      <span>Temp Mail JWT</span>
+                      <input
+                        className="mode-input"
+                        value={selectedProfile.inbox?.addressJwt || ""}
+                        onChange={(event) =>
+                          updateSelectedProfile((profile) => ({
+                            ...profile,
+                            inbox: buildInboxPatch(profile.inbox, {
+                              addressJwt: event.target.value
+                            })
+                          }))
+                        }
+                        placeholder="eyJhbGciOi..."
+                      />
+                    </label>
+                  </div>
+                </section>
+              ) : (
+                <section className="mode-shell-inner mode-section">
+                  <div className="mode-section-head">
+                    <div>
+                      <div className="mode-section-title">Temp Mail 直连配置</div>
+                      <div className="mode-section-desc">
+                        这里不需要预先手填收件地址和 JWT，点击创建收件箱后会自动回填。
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mode-field-grid">
+                    <label className="mode-field span-4">
+                      <span>名称</span>
+                      <input
+                        className="mode-input"
+                        value={selectedProfile.name}
+                        onChange={(event) =>
+                          updateSelectedProfile((profile) => ({
+                            ...profile,
+                            name: event.target.value
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="mode-field span-4">
+                      <span>Base URL</span>
+                      <input
+                        className="mode-input"
+                        value={selectedProfile.tempMail.baseUrl}
+                        onChange={(event) =>
+                          updateSelectedProfile((profile) => ({
+                            ...profile,
+                            tempMail: {
+                              ...profile.tempMail,
+                              baseUrl: event.target.value
+                            }
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="mode-field span-4">
+                      <span>Domain</span>
+                      <input
+                        className="mode-input"
+                        value={selectedProfile.tempMail.domain}
+                        onChange={(event) =>
+                          updateSelectedProfile((profile) => ({
+                            ...profile,
+                            tempMail: {
+                              ...profile.tempMail,
+                              domain: event.target.value
+                            }
+                          }))
+                        }
+                      />
+                    </label>
+
+                    <label className="mode-field span-8">
+                      <span>Admin Auth</span>
+                      <input
+                        className="mode-input"
+                        value={selectedProfile.tempMail.adminAuth}
+                        onChange={(event) =>
+                          updateSelectedProfile((profile) => ({
+                            ...profile,
+                            tempMail: {
+                              ...profile.tempMail,
+                              adminAuth: event.target.value
+                            }
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="mode-field span-4">
+                      <span>Name Prefix</span>
+                      <input
+                        className="mode-input"
+                        value={selectedProfile.tempMail.namePrefix}
+                        onChange={(event) =>
+                          updateSelectedProfile((profile) => ({
+                            ...profile,
+                            tempMail: {
+                              ...profile.tempMail,
+                              namePrefix: event.target.value
+                            }
+                          }))
+                        }
+                      />
+                    </label>
+
+                    <label className="mode-field span-4">
+                      <span>轮询间隔</span>
+                      <input
+                        className="mode-input"
+                        type="number"
+                        value={selectedProfile.tempMail.pollIntervalMs}
+                        onChange={(event) =>
+                          updateSelectedProfile((profile) => ({
+                            ...profile,
+                            tempMail: {
+                              ...profile.tempMail,
+                              pollIntervalMs: parseNumber(
+                                event.target.value,
+                                profile.tempMail.pollIntervalMs
+                              )
+                            }
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="mode-field span-4">
+                      <span>超时</span>
+                      <input
+                        className="mode-input"
+                        type="number"
+                        value={selectedProfile.tempMail.pollTimeoutMs}
+                        onChange={(event) =>
+                          updateSelectedProfile((profile) => ({
+                            ...profile,
+                            tempMail: {
+                              ...profile.tempMail,
+                              pollTimeoutMs: parseNumber(
+                                event.target.value,
+                                profile.tempMail.pollTimeoutMs
+                              )
+                            }
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="mode-field span-4">
+                      <span>Custom Auth</span>
+                      <input
+                        className="mode-input"
+                        value={selectedProfile.tempMail.customAuth}
+                        onChange={(event) =>
+                          updateSelectedProfile((profile) => ({
+                            ...profile,
+                            tempMail: {
+                              ...profile.tempMail,
+                              customAuth: event.target.value
+                            }
+                          }))
+                        }
+                        placeholder="可选"
+                      />
+                    </label>
+                  </div>
+                </section>
+              )}
+            </>
+          ) : (
+            <>
+              <section className="mode-shell-inner mode-summary">
+                <div className="mode-top-row">
+                  <div>
+                    <div className="mode-summary-title">状态信息</div>
+                    <div className="mode-summary-desc">当前配置地址、同步状态和邮件内容都集中在这里查看。</div>
+                  </div>
+                  <div className="mode-action-row">
+                    {selectedProfile.mode === "duck" ? (
+                      <button
+                        className="mode-ghost-btn"
+                        disabled={busyAction !== null}
+                        onClick={() => void handleGenerateAlias()}
+                      >
+                        {busyAction === "alias" ? "生成中..." : "生成 Duck 地址"}
+                      </button>
+                    ) : (
+                      <button
+                        className="mode-ghost-btn"
+                        disabled={busyAction !== null}
+                        onClick={() => void handleCreateInbox()}
+                      >
+                        {busyAction === "inbox" ? "创建中..." : "创建收件箱"}
+                      </button>
+                    )}
+                    <button
+                      className="mode-secondary-btn"
+                      disabled={busyAction !== null}
+                      onClick={() => void handleSyncMessages()}
+                    >
+                      {busyAction === "sync" ? "同步中..." : "立即同步"}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mode-summary-grid">
+                  <div className="mode-stat-card">
+                    <span>显示名称</span>
+                    <strong>{selectedProfile.name || "未命名"}</strong>
+                  </div>
+                  <div className="mode-stat-card">
+                    <span>接入方式</span>
+                    <strong>{getModeLabel(selectedProfile.mode)}</strong>
+                  </div>
+                  <div className="mode-stat-card">
+                    <span>当前地址</span>
+                    <strong>{stats.currentAddress}</strong>
+                  </div>
+                  <div className="mode-stat-card">
+                    <span>最近同步</span>
+                    <strong>{formatAbsoluteDateTime(selectedProfile.lastSyncedAt)}</strong>
+                  </div>
+                  <div className="mode-stat-card">
+                    <span>邮件总数</span>
+                    <strong>{stats.total}</strong>
+                  </div>
+                  <div className="mode-stat-card">
+                    <span>未读数量</span>
+                    <strong>{stats.unread}</strong>
+                  </div>
+                </div>
+              </section>
+
+              <section className="mode-shell-inner mode-section">
+                <div className="mode-section-head">
+                  <div>
+                    <div className="mode-section-title">当前运行状态</div>
+                    <div className="mode-section-desc">状态页只负责展示已经生效的地址、收件箱和同步结果。</div>
+                  </div>
+                </div>
+
+                <div className="mode-state-grid">
+                  {selectedProfile.mode === "duck" ? (
+                    <article className="mode-state-card">
+                      <span>当前 Duck 地址</span>
+                      <strong>{currentAlias?.address || "还没有生成 Duck 地址"}</strong>
+                      <em>生成后这里会显示当前正在使用的 Duck 别名。</em>
+                    </article>
+                  ) : (
+                    <article className="mode-state-card">
+                      <span>当前模式</span>
+                      <strong>Temp Mail 直连</strong>
+                      <em>该模式下邮件会直接来自你创建的 Temp Mail 收件箱。</em>
+                    </article>
+                  )}
+
+                  <article className="mode-state-card">
+                    <span>当前收件箱</span>
+                    <strong>{selectedProfile.inbox?.address || "尚未创建收件箱"}</strong>
+                    <em>
+                      {selectedProfile.inbox?.addressJwt
+                        ? "JWT 已准备好，可以直接同步并查看邮件。"
+                        : selectedProfile.mode === "duck"
+                          ? "请回到编辑配置页填写现成的 Temp Mail 地址和 JWT。"
+                          : "点击“创建收件箱”后会自动回填地址和 JWT。"}
+                    </em>
+                  </article>
+                </div>
+              </section>
+
+              <section className="mode-shell-inner mode-section">
+                <div className="mode-section-head">
+                  <div>
+                    <div className="mode-section-title">邮件列表</div>
+                    <div className="mode-section-desc">状态页里可以直接查看当前配置同步到的邮件内容。</div>
+                  </div>
+                  <div className="mode-mail-count">{stats.total} 封</div>
+                </div>
+
+                <StatusMailList
+                  messages={selectedProfile.messages}
+                  readMessageIds={selectedProfile.readMessageIds}
+                />
+              </section>
+            </>
+          )}
+        </section>
       </div>
     </main>
   );
