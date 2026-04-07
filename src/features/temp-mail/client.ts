@@ -555,7 +555,8 @@ function normalizeMailRecord(message: TempMailMessage): TempMailMessage {
         ? message.address
         : (record.address as string | undefined) ||
           (record.mailbox as string | undefined) ||
-          (record.to_address as string | undefined),
+          (record.to_address as string | undefined) ||
+          (record.to as string | undefined),
     raw: rawCandidate,
     source: sourceCandidate,
     text:
@@ -697,7 +698,17 @@ export function summarizeTempMailMessage(
     mimeBodies.text ? cleanMailText(mimeBodies.text) : cleanMailText(mimeBodies.html)
   );
   const htmlContent = mimeBodies.html;
-  const recipientAddress = String(message.address || address || "");
+  const recipientAddress = extractMailboxAddress(
+    String(
+      message.address ||
+        message.to ||
+        extractHeader(raw, "X-Original-To") ||
+        extractHeader(raw, "Delivered-To") ||
+        extractHeader(raw, "To") ||
+        address ||
+        ""
+    )
+  );
   const sourceAddress = resolveSourceAddress(message, raw, recipientAddress);
   const preview = decodeMimeEncodedWord(
     String((content || subject || "").replace(/\s+/g, " ").trim().slice(0, 140))

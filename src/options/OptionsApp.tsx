@@ -674,6 +674,8 @@ export function OptionsApp() {
   const [tempMailStatusScope, setTempMailStatusScope] = useState<MailScope>("current");
   const [hasMoreStatusMessages, setHasMoreStatusMessages] = useState(false);
   const [loadingMoreMessages, setLoadingMoreMessages] = useState(false);
+  const [adminLoadedCount, setAdminLoadedCount] = useState(0);
+  const adminTotalCountRef = useRef(0);
   const [deleteTargetProfileId, setDeleteTargetProfileId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -754,8 +756,12 @@ export function OptionsApp() {
       };
     }
 
-    const total =
-      statusScopeData.totalCount > 0 ? statusScopeData.totalCount : statusScopeData.loadedCount;
+    const isAllScope = selectedProfile.mode === "tempmail" && tempMailStatusScope === "all";
+    const total = isAllScope && adminTotalCountRef.current > 0
+      ? adminTotalCountRef.current
+      : statusScopeData.totalCount > 0
+        ? statusScopeData.totalCount
+        : statusScopeData.loadedCount;
 
     return {
       total,
@@ -766,7 +772,7 @@ export function OptionsApp() {
       unread: statusScopeData.unreadCount,
       currentAddress: getProfileAddress(selectedProfile)
     };
-  }, [selectedProfile, statusScopeData]);
+  }, [selectedProfile, statusScopeData, tempMailStatusScope]);
 
   function updateSelectedProfile(updater: (profile: DuckProfile) => DuckProfile) {
     setProfiles((current) =>
@@ -1067,15 +1073,71 @@ export function OptionsApp() {
       return;
     }
 
+    const appliedProfile = applyTempMailInbox(selectedProfile, inbox);
     const nextProfiles = profiles.map((profile) =>
-      profile.id === selectedProfile.id
-        ? applyTempMailInbox(profile, inbox)
-        : profile
+      profile.id === selectedProfile.id ? appliedProfile : profile
     );
 
     await persistProfiles(nextProfiles, selectedProfile.id);
     setTempMailStatusScope("current");
-    setNotice({ type: "info", message: `已切换到 ${inbox.address}，请重新同步当前邮箱的邮件。` });
+
+    // Auto-sync messages for the switched inbox
+    if (!inbox.addressJwt?.trim()) {
+      setNotice({ type: "info", message: `已切换到 ${inbox.address}。` });
+      return;
+    }
+
+    const normalizedProfile = patchDuckProfileTempMailFromInbox(appliedProfile);
+    if (!normalizedProfile.tempMail.baseUrl.trim()) {
+      setNotice({ type: "info", message: `已切换到 ${inbox.address}。` });
+      return;
+    }
+
+    setBusyAction("sync");
+
+    try {
+      const { messages, totalCount } = await fetchTempMailMessageSummaryPage(
+        {
+          ...normalizedProfile.tempMail,
+          ...inbox
+        },
+        {
+          limit: MESSAGE_PAGE_SIZE,
+          offset: 0
+        }
+      );
+
+      const syncedProfiles = nextProfiles.map((profile) =>
+        profile.id === selectedProfile.id
+          ? syncCurrentTempMailInboxState(
+              appliedProfile,
+              (state) => ({
+                ...state,
+                inbox,
+                messages,
+                messageTotal: totalCount ?? messages.length,
+                readMessageIds: mergeReadMessageIds(state.readMessageIds),
+                lastSyncedAt: new Date().toISOString()
+              })
+            )
+          : profile
+      );
+
+      await persistProfiles(syncedProfiles, selectedProfile.id);
+      const resolvedTotal = totalCount ?? messages.length;
+      setHasMoreStatusMessages(getHasMoreMessages(resolvedTotal, messages.length, messages.length));
+      setNotice({
+        type: "success",
+        message: `已切换到 ${inbox.address}，同步 ${messages.length} 封邮件${resolvedTotal > messages.length ? `（共 ${resolvedTotal}）` : ""}。`
+      });
+    } catch (error) {
+      setNotice({
+        type: "error",
+        message: `已切换到 ${inbox.address}，但同步失败：${error instanceof Error ? error.message : "未知错误"}`
+      });
+    } finally {
+      setBusyAction(null);
+    }
   }
 
   async function handleSyncMessages() {
@@ -1105,7 +1167,7 @@ export function OptionsApp() {
       if (selectedProfile.mode === "tempmail" && tempMailStatusScope === "all") {
         const { messages, totalCount } = await fetchTempMailAdminMessageSummaryPage(
           normalizedProfile.tempMail,
-          selectedProfile.inbox?.address || "",
+          "",
           {
             limit: MESSAGE_PAGE_SIZE,
             offset: 0
@@ -1128,30 +1190,66 @@ export function OptionsApp() {
           groupedMessages.set(mailboxAddress, currentMessages);
         }
 
-        const nextStates = tempMailHistoryOptions.map(({ inbox }) => {
+        // Build states for known inboxes + any new addresses discovered from admin
+        const processedAddresses = new Set<string>();
+        const nextStates: TempMailInboxState[] = [];
+
+        for (const { inbox } of tempMailHistoryOptions) {
           const currentState = existingStateMap.get(inbox.address) || buildTempMailInboxState(inbox);
           const nextMessages = groupedMessages.get(inbox.address) || [];
+          processedAddresses.add(inbox.address);
 
-          return {
+          nextStates.push({
             ...currentState,
             inbox,
             messages: nextMessages,
             messageTotal: nextMessages.length,
             readMessageIds: mergeReadMessageIds(currentState.readMessageIds),
             lastSyncedAt: new Date().toISOString()
+          });
+        }
+
+        // Create states for addresses found in admin results but not in history
+        for (const [address, addressMessages] of groupedMessages) {
+          if (processedAddresses.has(address)) {
+            continue;
+          }
+
+          const discoveredInbox: TempMailInbox = {
+            address,
+            addressJwt: "",
+            createdAt: new Date().toISOString()
           };
-        });
+          const existingState = existingStateMap.get(address);
+
+          nextStates.push({
+            inbox: discoveredInbox,
+            messages: addressMessages,
+            messageTotal: addressMessages.length,
+            readMessageIds: mergeReadMessageIds(existingState?.readMessageIds || []),
+            lastSyncedAt: new Date().toISOString()
+          });
+        }
 
         const currentInboxState =
           (selectedProfile.inbox &&
             nextStates.find((state) => sameTempMailInbox(state.inbox, selectedProfile.inbox))) ||
           null;
 
+        // Merge discovered inboxes into tempMailInboxes so they appear in the dropdown
+        let mergedInboxes = [...selectedProfile.tempMailInboxes];
+        for (const state of nextStates) {
+          if (!mergedInboxes.some((inbox) => sameTempMailInbox(inbox, state.inbox))) {
+            mergedInboxes.push(state.inbox);
+          }
+        }
+
         const nextProfiles = profiles.map((profile) =>
           profile.id === selectedProfile.id
             ? updateProfileTimestamp({
                 ...profile,
                 tempMail: normalizedProfile.tempMail,
+                tempMailInboxes: mergedInboxes,
                 tempMailInboxStates: nextStates,
                 messages: currentInboxState?.messages || profile.messages,
                 messageTotal: currentInboxState?.messageTotal ?? profile.messageTotal,
@@ -1162,10 +1260,13 @@ export function OptionsApp() {
         );
 
         await persistProfiles(nextProfiles, selectedProfile.id);
-        setHasMoreStatusMessages(false);
+        const resolvedAdminTotal = totalCount ?? messages.length;
+        setAdminLoadedCount(messages.length);
+        adminTotalCountRef.current = resolvedAdminTotal;
+        setHasMoreStatusMessages(getHasMoreMessages(resolvedAdminTotal, messages.length, messages.length));
         setNotice({
           type: "success",
-          message: `已通过 admin 同步全部历史邮箱，当前加载 ${messages.length} 封邮件。`
+          message: `已通过 admin 同步全部历史邮箱，当前加载 ${messages.length}${resolvedAdminTotal > messages.length ? ` / ${resolvedAdminTotal}` : ""} 封邮件。`
         });
         return;
       }
@@ -1220,11 +1321,128 @@ export function OptionsApp() {
   }
 
   async function handleLoadMoreMessages() {
-    if (!selectedProfile || !selectedProfile.inbox?.addressJwt.trim() || loadingMoreMessages) {
+    if (!selectedProfile || loadingMoreMessages) {
       return;
     }
 
     const normalizedProfile = patchDuckProfileTempMailFromInbox(selectedProfile);
+
+    // Admin "all" scope load more
+    if (selectedProfile.mode === "tempmail" && tempMailStatusScope === "all") {
+      if (!normalizedProfile.tempMail.adminAuth.trim()) {
+        return;
+      }
+
+      setLoadingMoreMessages(true);
+
+      try {
+        const { messages: nextPageMessages, totalCount } = await fetchTempMailAdminMessageSummaryPage(
+          normalizedProfile.tempMail,
+          "",
+          {
+            limit: MESSAGE_PAGE_SIZE,
+            offset: adminLoadedCount
+          }
+        );
+
+        const existingStateMap = new Map(
+          selectedProfile.tempMailInboxStates.map((state) => [state.inbox.address, state])
+        );
+
+        // Group new messages by address and merge into existing states
+        const groupedNewMessages = new Map<string, MailSummary[]>();
+        for (const message of nextPageMessages) {
+          const mailboxAddress = message.recipientAddress || message.address;
+          if (!mailboxAddress) {
+            continue;
+          }
+          const currentMessages = groupedNewMessages.get(mailboxAddress) || [];
+          currentMessages.push(message);
+          groupedNewMessages.set(mailboxAddress, currentMessages);
+        }
+
+        const processedAddresses = new Set<string>();
+        const nextStates: TempMailInboxState[] = [];
+
+        // Update existing states with merged messages
+        for (const state of selectedProfile.tempMailInboxStates) {
+          const newMessages = groupedNewMessages.get(state.inbox.address) || [];
+          const mergedMessages = mergeMailSummaries(state.messages, newMessages);
+          processedAddresses.add(state.inbox.address);
+
+          nextStates.push({
+            ...state,
+            messages: mergedMessages,
+            messageTotal: mergedMessages.length,
+            lastSyncedAt: new Date().toISOString()
+          });
+        }
+
+        // Create states for newly discovered addresses
+        for (const [address, addressMessages] of groupedNewMessages) {
+          if (processedAddresses.has(address)) {
+            continue;
+          }
+
+          nextStates.push({
+            inbox: { address, addressJwt: "", createdAt: new Date().toISOString() },
+            messages: addressMessages,
+            messageTotal: addressMessages.length,
+            readMessageIds: [],
+            lastSyncedAt: new Date().toISOString()
+          });
+        }
+
+        let mergedInboxes = [...selectedProfile.tempMailInboxes];
+        for (const state of nextStates) {
+          if (!mergedInboxes.some((inbox) => sameTempMailInbox(inbox, state.inbox))) {
+            mergedInboxes.push(state.inbox);
+          }
+        }
+
+        const currentInboxState =
+          (selectedProfile.inbox &&
+            nextStates.find((state) => sameTempMailInbox(state.inbox, selectedProfile.inbox))) ||
+          null;
+
+        const nextProfiles = profiles.map((profile) =>
+          profile.id === selectedProfile.id
+            ? updateProfileTimestamp({
+                ...profile,
+                tempMail: normalizedProfile.tempMail,
+                tempMailInboxes: mergedInboxes,
+                tempMailInboxStates: nextStates,
+                messages: currentInboxState?.messages || profile.messages,
+                messageTotal: currentInboxState?.messageTotal ?? profile.messageTotal,
+                readMessageIds: currentInboxState?.readMessageIds || profile.readMessageIds,
+                lastSyncedAt: currentInboxState?.lastSyncedAt || profile.lastSyncedAt
+              })
+            : profile
+        );
+
+        const nextAdminLoaded = adminLoadedCount + nextPageMessages.length;
+        await persistProfiles(nextProfiles, selectedProfile.id);
+        setAdminLoadedCount(nextAdminLoaded);
+        if (totalCount != null) {
+          adminTotalCountRef.current = totalCount;
+        }
+        const resolvedTotal = totalCount ?? adminTotalCountRef.current ?? nextAdminLoaded;
+        setHasMoreStatusMessages(
+          getHasMoreMessages(resolvedTotal, nextAdminLoaded, nextPageMessages.length)
+        );
+      } catch {
+        // silent
+      } finally {
+        setLoadingMoreMessages(false);
+      }
+      return;
+    }
+
+    // Current inbox load more
+    if (!selectedProfile.inbox?.addressJwt.trim()) {
+      return;
+    }
+
     const inbox = normalizedProfile.inbox;
     if (!inbox?.addressJwt.trim()) {
       return;
@@ -1270,17 +1488,8 @@ export function OptionsApp() {
       setHasMoreStatusMessages(
         getHasMoreMessages(resolvedTotal, mergedMessages.length, nextPageMessages.length)
       );
-      setNotice({
-        type: "success",
-        message: nextPageMessages.length
-          ? `已追加 ${nextPageMessages.length} 封邮件，当前已加载 ${mergedMessages.length}${resolvedTotal > mergedMessages.length ? ` / ${resolvedTotal}` : ""}。`
-          : "已经到底了，没有更多邮件。"
-      });
-    } catch (error) {
-      setNotice({
-        type: "error",
-        message: error instanceof Error ? error.message : "加载更多邮件失败。"
-      });
+    } catch {
+      // silent
     } finally {
       setLoadingMoreMessages(false);
     }
@@ -1305,7 +1514,7 @@ export function OptionsApp() {
     }
 
     if (selectedProfile.mode === "tempmail" && tempMailStatusScope === "all") {
-      setHasMoreStatusMessages(false);
+      // Admin "all" scope hasMore is managed by handleSyncMessages/handleLoadMoreMessages
       return;
     }
 
@@ -1820,7 +2029,7 @@ export function OptionsApp() {
                   </div>
                   {selectedProfile.mode === "tempmail" ? (
                     <div className="mode-status-mailbox-switch">
-                      <span>查看范围</span>
+                      <span>切换邮箱</span>
                       <select
                         value={
                           tempMailStatusScope === "all"
@@ -1831,6 +2040,9 @@ export function OptionsApp() {
                           const nextValue = event.target.value;
                           if (nextValue === "all") {
                             setTempMailStatusScope("all");
+                            setAdminLoadedCount(0);
+                            adminTotalCountRef.current = 0;
+                            setHasMoreStatusMessages(false);
                             return;
                           }
 
@@ -1843,7 +2055,7 @@ export function OptionsApp() {
                         }}
                       >
                         {canViewAllTempMailHistory ? (
-                          <option value="all">全部历史邮箱</option>
+                          <option value="all">全部邮箱（仅查看）</option>
                         ) : null}
                         {tempMailHistoryOptions.map(({ value, inbox }) => (
                           <option key={value} value={value}>
@@ -1870,7 +2082,7 @@ export function OptionsApp() {
                   messages={statusScopeData?.messages || []}
                   readMessageIds={statusScopeData?.readMessageIds || []}
                   theme={theme}
-                  hasMore={selectedProfile.mode === "tempmail" && tempMailStatusScope === "all" ? false : hasMoreStatusMessages}
+                  hasMore={hasMoreStatusMessages}
                   loadingMore={loadingMoreMessages}
                   onLoadMore={handleLoadMoreMessages}
                   onSelectMessage={handleSelectStatusMessage}
