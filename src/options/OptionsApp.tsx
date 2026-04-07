@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createDuckAlias } from "../features/ddg/client";
 import {
   createTempMailInbox,
+  fetchTempMailAdminMessageSummaryPage,
   fetchTempMailMessageSummaryPage
 } from "../features/temp-mail/client";
 import {
@@ -735,6 +736,9 @@ export function OptionsApp() {
     () => (selectedProfile ? getTempMailHistoryOptions(selectedProfile) : []),
     [selectedProfile]
   );
+  const canViewAllTempMailHistory = Boolean(
+    selectedProfile?.mode === "tempmail" && selectedProfile.tempMail.adminAuth.trim()
+  );
   const statusScopeData = useMemo(
     () => (selectedProfile ? getStatusMailScopeData(selectedProfile, tempMailStatusScope) : null),
     [selectedProfile, tempMailStatusScope]
@@ -1099,32 +1103,44 @@ export function OptionsApp() {
 
     try {
       if (selectedProfile.mode === "tempmail" && tempMailStatusScope === "all") {
-        const nextStates = await Promise.all(
-          tempMailHistoryOptions.map(async ({ inbox }) => {
-            const currentState =
-              selectedProfile.tempMailInboxStates.find((state) => sameTempMailInbox(state.inbox, inbox)) ||
-              buildTempMailInboxState(inbox);
-            const { messages, totalCount } = await fetchTempMailMessageSummaryPage(
-              {
-                ...normalizedProfile.tempMail,
-                ...inbox
-              },
-              {
-                limit: MESSAGE_PAGE_SIZE,
-                offset: 0
-              }
-            );
-
-            return {
-              ...currentState,
-              inbox,
-              messages,
-              messageTotal: totalCount ?? messages.length,
-              readMessageIds: mergeReadMessageIds(currentState.readMessageIds),
-              lastSyncedAt: new Date().toISOString()
-            };
-          })
+        const { messages, totalCount } = await fetchTempMailAdminMessageSummaryPage(
+          normalizedProfile.tempMail,
+          selectedProfile.inbox?.address || "",
+          {
+            limit: MESSAGE_PAGE_SIZE,
+            offset: 0
+          }
         );
+
+        const existingStateMap = new Map(
+          selectedProfile.tempMailInboxStates.map((state) => [state.inbox.address, state])
+        );
+        const groupedMessages = new Map<string, MailSummary[]>();
+
+        for (const message of messages) {
+          const mailboxAddress = message.recipientAddress || message.address;
+          if (!mailboxAddress) {
+            continue;
+          }
+
+          const currentMessages = groupedMessages.get(mailboxAddress) || [];
+          currentMessages.push(message);
+          groupedMessages.set(mailboxAddress, currentMessages);
+        }
+
+        const nextStates = tempMailHistoryOptions.map(({ inbox }) => {
+          const currentState = existingStateMap.get(inbox.address) || buildTempMailInboxState(inbox);
+          const nextMessages = groupedMessages.get(inbox.address) || [];
+
+          return {
+            ...currentState,
+            inbox,
+            messages: nextMessages,
+            messageTotal: nextMessages.length,
+            readMessageIds: mergeReadMessageIds(currentState.readMessageIds),
+            lastSyncedAt: new Date().toISOString()
+          };
+        });
 
         const currentInboxState =
           (selectedProfile.inbox &&
@@ -1149,7 +1165,7 @@ export function OptionsApp() {
         setHasMoreStatusMessages(false);
         setNotice({
           type: "success",
-          message: `已同步 ${nextStates.length} 个历史邮箱，共加载 ${nextStates.reduce((total, state) => total + state.messages.length, 0)} 封邮件。`
+          message: `已通过 admin 同步全部历史邮箱，当前加载 ${messages.length} 封邮件。`
         });
         return;
       }
@@ -1275,6 +1291,12 @@ export function OptionsApp() {
       setTempMailStatusScope("current");
     }
   }, [selectedProfile?.id, selectedProfile?.mode]);
+
+  useEffect(() => {
+    if (!canViewAllTempMailHistory && tempMailStatusScope === "all") {
+      setTempMailStatusScope("current");
+    }
+  }, [canViewAllTempMailHistory, tempMailStatusScope]);
 
   useEffect(() => {
     if (!selectedProfile) {
@@ -1820,7 +1842,9 @@ export function OptionsApp() {
                           void handleSelectTempMailInbox(nextInbox);
                         }}
                       >
-                        <option value="all">全部历史邮箱</option>
+                        {canViewAllTempMailHistory ? (
+                          <option value="all">全部历史邮箱</option>
+                        ) : null}
                         {tempMailHistoryOptions.map(({ value, inbox }) => (
                           <option key={value} value={value}>
                             {inbox.address}

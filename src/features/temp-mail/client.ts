@@ -790,6 +790,38 @@ export async function fetchTempMailMessagePage(
   };
 }
 
+export async function fetchTempMailAdminMessagePage(
+  config: TempMailConfig,
+  query: TempMailMessageQuery = {}
+): Promise<TempMailMessagePage> {
+  const params = new URLSearchParams({
+    limit: String(query.limit ?? 20),
+    offset: String(query.offset ?? 0)
+  });
+
+  const response = await fetch(
+    `${joinUrl(config.baseUrl, "/admin/mails")}?${params.toString()}`,
+    {
+      method: "GET",
+      headers: buildAdminHeaders(config)
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Temp Mail admin message fetch failed: ${response.status}`);
+  }
+
+  const data = (await response.json()) as
+    | TempMailMessage[]
+    | TempMailMessageListResponse
+    | Record<string, unknown>;
+
+  return {
+    messages: findMailArray(data),
+    totalCount: extractTotalCount(data)
+  };
+}
+
 export async function fetchTempMailMessages(
   session: TempMailMailboxSession,
   query: TempMailMessageQuery = {}
@@ -807,6 +839,21 @@ export async function fetchTempMailMessageSummaryPage(
   return {
     messages: result.messages.map((message, index) =>
       summarizeTempMailMessage(message, session.address, index)
+    ),
+    totalCount: result.totalCount
+  };
+}
+
+export async function fetchTempMailAdminMessageSummaryPage(
+  config: TempMailConfig,
+  address: string,
+  query: TempMailMessageQuery = {}
+): Promise<{ messages: TempMailMessageSummary[]; totalCount: number | null }> {
+  const result = await fetchTempMailAdminMessagePage(config, query);
+
+  return {
+    messages: result.messages.map((message, index) =>
+      summarizeTempMailMessage(message, address, index)
     ),
     totalCount: result.totalCount
   };

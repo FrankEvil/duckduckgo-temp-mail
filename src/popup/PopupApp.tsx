@@ -339,7 +339,7 @@ export function PopupApp() {
       return "text";
     }
 
-    return messageViewModes[messageId] || "html";
+    return messageViewModes[messageId] || "text";
   }
 
   function handleChangeMessageView(messageId: string, mode: MessageViewMode) {
