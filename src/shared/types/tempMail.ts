@@ -35,11 +35,19 @@ export type TempMailMessage = {
 export type TempMailMessageListResponse = {
   mails?: TempMailMessage[];
   data?: TempMailMessage[];
+  results?: TempMailMessage[];
+  count?: number;
+  total?: number;
 };
 
 export type TempMailMessageQuery = {
   limit?: number;
   offset?: number;
+};
+
+export type TempMailMessagePage = {
+  messages: TempMailMessage[];
+  totalCount: number | null;
 };
 
 export type TempMailMailboxSession = TempMailConfig & TempMailInbox;

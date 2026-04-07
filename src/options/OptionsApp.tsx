@@ -1,10 +1,15 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { createDuckAlias } from "../features/ddg/client";
 import {
   createTempMailInbox,
-  fetchTempMailMessageSummaries
+  fetchTempMailMessageSummaryPage
 } from "../features/temp-mail/client";
+import {
+  EmailHtmlFrame,
+  extractMailbox,
+  normalizePlainTextContent
+} from "../shared/components/EmailHtmlFrame";
 import {
   PopupTheme,
   createEmptyProfile,
@@ -17,7 +22,7 @@ import {
 } from "../shared/storage/local";
 import { DuckAlias } from "../shared/types/duck";
 import { MailSummary } from "../shared/types/mail";
-import { DuckProfile, ProfileMode } from "../shared/types/profile";
+import { DuckProfile, ProfileMode, TempMailInboxState } from "../shared/types/profile";
 import { TempMailInbox } from "../shared/types/tempMail";
 
 type Notice = {
@@ -25,8 +30,12 @@ type Notice = {
   message: string;
 };
 
-type BusyAction = "save" | "alias" | "inbox" | "sync" | null;
+type BusyAction = "save" | "alias" | "inbox" | "sync" | "delete" | null;
 type PanelView = "edit" | "status";
+type MessageViewMode = "html" | "text";
+type MailScope = "current" | "all";
+
+const MESSAGE_PAGE_SIZE = 20;
 
 function normalizeUrl(value: string) {
   return value.trim().replace(/\/+$/, "");
@@ -49,6 +58,121 @@ function mergeAlias(profile: DuckProfile, newAlias: DuckAlias): DuckProfile {
     ...profile,
     aliases: [newAlias, ...profile.aliases.filter((item) => item.id !== newAlias.id)],
     currentAliasId: newAlias.id
+  });
+}
+
+function sameTempMailInbox(left: TempMailInbox | null | undefined, right: TempMailInbox | null | undefined) {
+  if (!left || !right) {
+    return false;
+  }
+
+  return (
+    (left.addressJwt && right.addressJwt && left.addressJwt === right.addressJwt) ||
+    (!!left.address && !!right.address && left.address === right.address)
+  );
+}
+
+function mergeTempMailInboxes(currentInboxes: TempMailInbox[], inbox: TempMailInbox) {
+  return [inbox, ...currentInboxes.filter((item) => !sameTempMailInbox(item, inbox))];
+}
+
+function buildTempMailInboxState(
+  inbox: TempMailInbox,
+  partial?: Partial<TempMailInboxState>
+): TempMailInboxState {
+  return {
+    inbox,
+    messages: partial?.messages || [],
+    messageTotal:
+      typeof partial?.messageTotal === "number" && partial.messageTotal >= 0
+        ? partial.messageTotal
+        : (partial?.messages || []).length,
+    readMessageIds: partial?.readMessageIds || [],
+    lastSyncedAt: partial?.lastSyncedAt || null
+  };
+}
+
+function getCurrentTempMailInboxState(profile: DuckProfile) {
+  if (!profile.inbox) {
+    return null;
+  }
+
+  return (
+    profile.tempMailInboxStates.find((state) => sameTempMailInbox(state.inbox, profile.inbox)) ||
+    buildTempMailInboxState(profile.inbox, {
+      messages: profile.messages,
+      messageTotal: profile.messageTotal,
+      readMessageIds: profile.readMessageIds,
+      lastSyncedAt: profile.lastSyncedAt
+    })
+  );
+}
+
+function syncCurrentTempMailInboxState(
+  profile: DuckProfile,
+  updater: (state: TempMailInboxState) => TempMailInboxState
+) {
+  if (profile.mode !== "tempmail" || !profile.inbox) {
+    const fallbackState = updater(
+      buildTempMailInboxState(
+        {
+          address: "",
+          addressJwt: "",
+          createdAt: new Date().toISOString()
+        },
+        {
+          messages: profile.messages,
+          messageTotal: profile.messageTotal,
+          readMessageIds: profile.readMessageIds,
+          lastSyncedAt: profile.lastSyncedAt
+        }
+      )
+    );
+
+    return updateProfileTimestamp({
+      ...profile,
+      messages: fallbackState.messages,
+      messageTotal: fallbackState.messageTotal,
+      readMessageIds: fallbackState.readMessageIds,
+      lastSyncedAt: fallbackState.lastSyncedAt
+    });
+  }
+
+  const currentState = getCurrentTempMailInboxState(profile) || buildTempMailInboxState(profile.inbox);
+  const nextState = updater(currentState);
+  const nextStates = [
+    nextState,
+    ...profile.tempMailInboxStates.filter((state) => !sameTempMailInbox(state.inbox, profile.inbox))
+  ];
+
+  return updateProfileTimestamp({
+    ...profile,
+    tempMailInboxes: mergeTempMailInboxes(profile.tempMailInboxes, nextState.inbox),
+    tempMailInboxStates: nextStates,
+    messages: nextState.messages,
+    messageTotal: nextState.messageTotal,
+    readMessageIds: nextState.readMessageIds,
+    lastSyncedAt: nextState.lastSyncedAt
+  });
+}
+
+function applyTempMailInbox(profile: DuckProfile, inbox: TempMailInbox) {
+  const matchedState =
+    profile.tempMailInboxStates.find((state) => sameTempMailInbox(state.inbox, inbox)) ||
+    buildTempMailInboxState(inbox);
+
+  return updateProfileTimestamp({
+    ...profile,
+    inbox,
+    tempMailInboxes: mergeTempMailInboxes(profile.tempMailInboxes, inbox),
+    tempMailInboxStates: [
+      matchedState,
+      ...profile.tempMailInboxStates.filter((state) => !sameTempMailInbox(state.inbox, inbox))
+    ],
+    messages: matchedState.messages,
+    messageTotal: matchedState.messageTotal,
+    readMessageIds: matchedState.readMessageIds,
+    lastSyncedAt: matchedState.lastSyncedAt
   });
 }
 
@@ -84,8 +208,90 @@ function getProfileSummaryLine(profile: DuckProfile) {
   return profile.inbox?.address || "Temp Mail 直连";
 }
 
+function getTempMailInboxHistory(profile: DuckProfile) {
+  return profile.tempMailInboxes.length
+    ? profile.tempMailInboxes
+    : profile.inbox
+      ? [profile.inbox]
+      : [];
+}
+
+function getTempMailHistoryOptions(profile: DuckProfile) {
+  return getTempMailInboxHistory(profile).map((inbox) => ({
+    value: inbox.addressJwt || inbox.address,
+    inbox
+  }));
+}
+
 function getUnreadCount(profile: DuckProfile) {
   return profile.messages.filter((message) => !profile.readMessageIds.includes(message.id)).length;
+}
+
+function buildScopedMessageId(inbox: TempMailInbox, messageId: string) {
+  return `${inbox.addressJwt || inbox.address}::${messageId}`;
+}
+
+function getStatusMailScopeData(profile: DuckProfile, scope: MailScope) {
+  if (profile.mode !== "tempmail" || scope === "current") {
+    const total = profile.messageTotal > 0 ? profile.messageTotal : profile.messages.length;
+    return {
+      messages: profile.messages,
+      readMessageIds: profile.readMessageIds,
+      loadedCount: profile.messages.length,
+      totalCount: total,
+      unreadCount: getUnreadCount(profile),
+      lastSyncedAt: profile.lastSyncedAt,
+      hasMore: false,
+      showRecipientAddress: false
+    };
+  }
+
+  const allStates = profile.tempMailInboxStates;
+  const scopedMessages = allStates
+    .flatMap((state) =>
+      state.messages.map((message) => ({
+        ...message,
+        id: buildScopedMessageId(state.inbox, message.id),
+        recipientAddress: message.recipientAddress || state.inbox.address,
+        address: state.inbox.address
+      }))
+    )
+    .sort((left, right) => {
+      const leftTime = new Date(left.receivedAt).getTime();
+      const rightTime = new Date(right.receivedAt).getTime();
+      return rightTime - leftTime;
+    });
+
+  const scopedReadMessageIds = allStates.flatMap((state) =>
+    state.readMessageIds.map((messageId) => buildScopedMessageId(state.inbox, messageId))
+  );
+  const loadedCount = allStates.reduce((total, state) => total + state.messages.length, 0);
+  const totalCount = allStates.reduce(
+    (total, state) => total + (state.messageTotal > 0 ? state.messageTotal : state.messages.length),
+    0
+  );
+  const unreadCount = allStates.reduce(
+    (total, state) =>
+      total +
+      state.messages.filter((message) => !state.readMessageIds.includes(message.id)).length,
+    0
+  );
+  const syncedAtList = allStates
+    .map((state) => state.lastSyncedAt)
+    .filter((value): value is string => !!value)
+    .sort();
+  const lastSyncedAt = syncedAtList.length ? syncedAtList[syncedAtList.length - 1] : null;
+
+  return {
+    messages: scopedMessages,
+    readMessageIds: scopedReadMessageIds,
+    loadedCount,
+    totalCount,
+    unreadCount,
+    lastSyncedAt,
+    hasMore: false,
+    showRecipientAddress: true
+  };
 }
 
 function formatAbsoluteDateTime(value: string | null) {
@@ -188,84 +394,113 @@ function patchDuckProfileTempMailFromInbox(profile: DuckProfile) {
   };
 }
 
-function sanitizeEmailHtml(html: string) {
-  const parser = new DOMParser();
-  const document = parser.parseFromString(html, "text/html");
-  const allowedTags = new Set([
-    "a",
-    "b",
-    "blockquote",
-    "br",
-    "code",
-    "div",
-    "em",
-    "hr",
-    "li",
-    "ol",
-    "p",
-    "pre",
-    "span",
-    "strong",
-    "table",
-    "tbody",
-    "td",
-    "th",
-    "thead",
-    "tr",
-    "u",
-    "ul"
-  ]);
-  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
-  const elements: Element[] = [];
+function mergeMailSummaries(currentMessages: MailSummary[], incomingMessages: MailSummary[]) {
+  const mergedMessages = [...currentMessages];
+  const knownMessageIds = new Set(currentMessages.map((message) => message.id));
 
-  while (walker.nextNode()) {
-    elements.push(walker.currentNode as Element);
-  }
-
-  for (const element of elements) {
-    const tagName = element.tagName.toLowerCase();
-
-    if (!allowedTags.has(tagName)) {
-      element.replaceWith(...Array.from(element.childNodes));
+  for (const message of incomingMessages) {
+    if (knownMessageIds.has(message.id)) {
       continue;
     }
 
-    for (const attribute of Array.from(element.attributes)) {
-      const attributeName = attribute.name.toLowerCase();
-      const attributeValue = attribute.value.trim();
-
-      if (attributeName.startsWith("on") || attributeName === "style" || attributeName === "src") {
-        element.removeAttribute(attribute.name);
-        continue;
-      }
-
-      if (attributeName === "href") {
-        if (!/^https?:/i.test(attributeValue) && !/^mailto:/i.test(attributeValue)) {
-          element.removeAttribute(attribute.name);
-          continue;
-        }
-
-        element.setAttribute("target", "_blank");
-        element.setAttribute("rel", "noreferrer noopener");
-        continue;
-      }
-
-      if (!["href", "target", "rel", "colspan", "rowspan"].includes(attributeName)) {
-        element.removeAttribute(attribute.name);
-      }
-    }
+    mergedMessages.push(message);
+    knownMessageIds.add(message.id);
   }
 
-  return document.body.innerHTML.trim();
+  return mergedMessages;
+}
+
+function mergeReadMessageIds(currentReadMessageIds: string[], incomingReadMessageIds: string[] = []) {
+  return Array.from(new Set([...currentReadMessageIds, ...incomingReadMessageIds]));
+}
+
+function getHasMoreMessages(totalCount: number, loadedCount: number, lastPageCount: number) {
+  if (totalCount > 0) {
+    return loadedCount < totalCount;
+  }
+
+  return lastPageCount >= MESSAGE_PAGE_SIZE;
 }
 
 function StatusMailList({
   messages,
-  readMessageIds
+  readMessageIds,
+  theme,
+  hasMore,
+  loadingMore,
+  onLoadMore,
+  onSelectMessage,
+  showRecipientAddress = false
 }: {
   messages: MailSummary[];
   readMessageIds: string[];
+  theme: PopupTheme;
+  hasMore: boolean;
+  loadingMore: boolean;
+  onLoadMore: () => Promise<void>;
+  onSelectMessage: (messageId: string) => void;
+  showRecipientAddress?: boolean;
 }) {
+  const [selectedMessageId, setSelectedMessageId] = useState<string | null>(messages[0]?.id || null);
+  const [messageViewModes, setMessageViewModes] = useState<Record<string, MessageViewMode>>({});
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
+  const autoLoadLockRef = useRef(false);
+
+  useEffect(() => {
+    setMessageViewModes((current) =>
+      Object.fromEntries(
+        Object.entries(current).filter(([messageId]) =>
+          messages.some((message) => message.id === messageId)
+        )
+      )
+    );
+  }, [messages]);
+
+  useEffect(() => {
+    setSelectedMessageId((current) =>
+      current && messages.some((message) => message.id === current) ? current : messages[0]?.id || null
+    );
+  }, [messages]);
+
+  useEffect(() => {
+    if (!loadingMore) {
+      autoLoadLockRef.current = false;
+    }
+  }, [loadingMore]);
+
+  useEffect(() => {
+    const root = listRef.current;
+    const sentinel = loadMoreSentinelRef.current;
+
+    if (!root || !sentinel || !hasMore || loadingMore) {
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) {
+          return;
+        }
+
+        if (autoLoadLockRef.current) {
+          return;
+        }
+
+        autoLoadLockRef.current = true;
+        void onLoadMore();
+      },
+      {
+        root,
+        rootMargin: "160px 0px",
+        threshold: 0.01
+      }
+    );
+
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasMore, loadingMore, onLoadMore, messages.length]);
+
   if (!messages.length) {
     return (
       <div className="mode-empty-state">
@@ -274,54 +509,155 @@ function StatusMailList({
     );
   }
 
-  return (
-    <div className="mode-mail-list">
-      {messages.map((message) => {
-        const datetime = formatListDateTime(message.receivedAt);
-        const isUnread = !readMessageIds.includes(message.id);
+  const selectedMessage =
+    messages.find((message) => message.id === selectedMessageId) || messages[0] || null;
 
-        return (
-          <details key={message.id} className={`mode-mail-card ${isUnread ? "is-unread" : ""}`}>
-            <summary className="mode-mail-summary">
-              <div className="mode-mail-main">
-                <div className="mode-mail-copy">
-                  <div className="mode-mail-title-row">
-                    <h4 className="mode-mail-title">{message.subject || "无主题"}</h4>
-                    {isUnread ? <span className="mode-mail-badge">未读</span> : null}
+  if (!selectedMessage) {
+    return null;
+  }
+
+  const selectedHasHtmlContent = Boolean(selectedMessage.htmlContent?.trim());
+  const selectedTextContent = normalizePlainTextContent(
+    selectedMessage.content || selectedMessage.raw || selectedMessage.preview || "暂无正文"
+  );
+  const selectedViewMode = selectedHasHtmlContent
+    ? messageViewModes[selectedMessage.id] || "html"
+    : "text";
+
+  return (
+    <div className="mode-mail-browser">
+      <div className="mode-mail-list-pane">
+        <div ref={listRef} className="mode-mail-list">
+          {messages.map((message) => {
+            const datetime = formatListDateTime(message.receivedAt);
+            const isUnread = !readMessageIds.includes(message.id);
+
+            return (
+              <article
+                key={message.id}
+                role="button"
+                tabIndex={0}
+                className={`mode-mail-card mode-mail-list-card ${isUnread ? "is-unread" : ""} ${
+                  selectedMessage.id === message.id ? "is-active" : ""
+                }`}
+                onClick={() => {
+                  setSelectedMessageId(message.id);
+                  onSelectMessage(message.id);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    setSelectedMessageId(message.id);
+                    onSelectMessage(message.id);
+                  }
+                }}
+                aria-pressed={selectedMessage.id === message.id}
+              >
+                <div className="mode-mail-list-head">
+                  <div className="mode-mail-list-titleline">
+                    <div className="mode-mail-list-title">{message.subject || "无主题"}</div>
+                    {isUnread ? <span className="mode-mail-unread-dot" aria-hidden="true"></span> : null}
                   </div>
-                  <div className="mode-mail-from">{message.from || "未知发件人"}</div>
-                  <div className="mode-mail-preview">{message.preview || "暂无摘要"}</div>
+                  <div className="mode-mail-list-date">
+                    {datetime.date ? <span>{datetime.date}</span> : null}
+                    <strong>{datetime.time}</strong>
+                  </div>
                 </div>
-                <div className="mode-mail-side">
+                <div className="mode-mail-list-from">
+                  {extractMailbox(message.sourceAddress || message.from || "未知发件人")}
+                </div>
+                {showRecipientAddress ? (
+                  <div className="mode-mail-list-recipient">
+                    {message.recipientAddress || message.address || "未知收件箱"}
+                  </div>
+                ) : null}
+                <div className="mode-mail-list-preview">{message.preview || "暂无摘要"}</div>
+              </article>
+            );
+          })}
+          <div ref={loadMoreSentinelRef} className="mode-mail-list-sentinel" aria-hidden="true"></div>
+        </div>
+        {hasMore || loadingMore ? (
+          <div className="mode-mail-more">
+            <span>{loadingMore ? "正在自动加载更多..." : "滚动到底部后自动加载更多"}</span>
+          </div>
+        ) : null}
+      </div>
+
+      <div className="mode-mail-reader">
+        <div className="mode-mail-reader-head">
+          <div>
+            <h4 className="mode-mail-reader-title">{selectedMessage.subject || "无主题"}</h4>
+            <div className="mode-mail-reader-from">
+              {extractMailbox(selectedMessage.sourceAddress || selectedMessage.from || "未知发件人")}
+            </div>
+          </div>
+          <div className="mode-mail-side">
+            {(() => {
+              const datetime = formatListDateTime(selectedMessage.receivedAt);
+              return (
+                <>
                   {datetime.date ? <span>{datetime.date}</span> : null}
                   <strong>{datetime.time}</strong>
-                </div>
-              </div>
-            </summary>
+                </>
+              );
+            })()}
+          </div>
+        </div>
 
-            <div className="mode-mail-detail">
-              <div className="mode-mail-route">
-                <span>{message.sourceAddress || message.from || "未知发件人"}</span>
-                <span className="mode-mail-route-arrow">→</span>
-                <span>{message.recipientAddress || message.address}</span>
-              </div>
+        <div className="mode-mail-route">
+          <span>{extractMailbox(selectedMessage.sourceAddress || selectedMessage.from || "未知发件人")}</span>
+          <span className="mode-mail-route-arrow">→</span>
+          <span>{selectedMessage.recipientAddress || selectedMessage.address}</span>
+        </div>
 
-              {message.htmlContent ? (
-                <div
-                  className="mode-mail-body html"
-                  dangerouslySetInnerHTML={{
-                    __html: sanitizeEmailHtml(message.htmlContent)
-                  }}
-                />
-              ) : (
-                <div className="mode-mail-body text">
-                  {message.content || message.preview || "暂无正文"}
-                </div>
-              )}
-            </div>
-          </details>
-        );
-      })}
+        <div className="mode-mail-body mode-mail-body-reader">
+          <div className="mode-mail-content-head">
+            <span>邮件内容</span>
+            {selectedHasHtmlContent ? (
+              <div className="mail-view-switch" role="tablist" aria-label="邮件视图切换">
+                <button
+                  type="button"
+                  className={`mail-view-switch-button ${selectedViewMode === "html" ? "is-active" : ""}`}
+                  onClick={() =>
+                    setMessageViewModes((current) => ({
+                      ...current,
+                      [selectedMessage.id]: "html"
+                    }))
+                  }
+                  aria-pressed={selectedViewMode === "html"}
+                >
+                  HTML
+                </button>
+                <button
+                  type="button"
+                  className={`mail-view-switch-button ${selectedViewMode === "text" ? "is-active" : ""}`}
+                  onClick={() =>
+                    setMessageViewModes((current) => ({
+                      ...current,
+                      [selectedMessage.id]: "text"
+                    }))
+                  }
+                  aria-pressed={selectedViewMode === "text"}
+                >
+                  纯文本
+                </button>
+              </div>
+            ) : null}
+          </div>
+          {selectedViewMode === "html" && selectedMessage.htmlContent ? (
+            <EmailHtmlFrame
+              html={selectedMessage.htmlContent}
+              title={`${selectedMessage.subject || "邮件"} HTML 视图`}
+              theme={theme}
+              inlineResourceMap={selectedMessage.inlineResourceMap}
+              className="mail-html-frame mail-html-frame-reader"
+            />
+          ) : (
+            <pre className="mail-plain-text mail-plain-text-reader">{selectedTextContent}</pre>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -334,6 +670,10 @@ export function OptionsApp() {
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
   const [theme, setTheme] = useState<PopupTheme>("dark");
   const [panelView, setPanelView] = useState<PanelView>("edit");
+  const [tempMailStatusScope, setTempMailStatusScope] = useState<MailScope>("current");
+  const [hasMoreStatusMessages, setHasMoreStatusMessages] = useState(false);
+  const [loadingMoreMessages, setLoadingMoreMessages] = useState(false);
+  const [deleteTargetProfileId, setDeleteTargetProfileId] = useState<string | null>(null);
 
   useEffect(() => {
     async function hydrate() {
@@ -375,23 +715,54 @@ export function OptionsApp() {
     return () => window.clearTimeout(timeout);
   }, [notice]);
 
+  useEffect(() => {
+    if (!deleteTargetProfileId) {
+      return undefined;
+    }
+
+    const handleKeydown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setDeleteTargetProfileId(null);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeydown);
+    return () => window.removeEventListener("keydown", handleKeydown);
+  }, [deleteTargetProfileId]);
+
   const selectedProfile = getSelectedProfile(profiles, selectedProfileId);
+  const tempMailHistoryOptions = useMemo(
+    () => (selectedProfile ? getTempMailHistoryOptions(selectedProfile) : []),
+    [selectedProfile]
+  );
+  const statusScopeData = useMemo(
+    () => (selectedProfile ? getStatusMailScopeData(selectedProfile, tempMailStatusScope) : null),
+    [selectedProfile, tempMailStatusScope]
+  );
 
   const stats = useMemo(() => {
-    if (!selectedProfile) {
+    if (!selectedProfile || !statusScopeData) {
       return {
         total: 0,
+        loadedLabel: "0",
         unread: 0,
         currentAddress: "未选择配置"
       };
     }
 
+    const total =
+      statusScopeData.totalCount > 0 ? statusScopeData.totalCount : statusScopeData.loadedCount;
+
     return {
-      total: selectedProfile.messages.length,
-      unread: getUnreadCount(selectedProfile),
+      total,
+      loadedLabel:
+        total > 0 && total !== statusScopeData.loadedCount
+          ? `${statusScopeData.loadedCount} / ${total}`
+          : String(statusScopeData.loadedCount),
+      unread: statusScopeData.unreadCount,
       currentAddress: getProfileAddress(selectedProfile)
     };
-  }, [selectedProfile]);
+  }, [selectedProfile, statusScopeData]);
 
   function updateSelectedProfile(updater: (profile: DuckProfile) => DuckProfile) {
     setProfiles((current) =>
@@ -406,6 +777,79 @@ export function OptionsApp() {
     setSelectedProfileId(nextSelectedId);
     await saveProfiles(nextProfiles);
     await saveActiveProfileId(nextSelectedId);
+  }
+
+  async function handleSelectStatusMessage(messageId: string) {
+    if (!selectedProfile) {
+      return;
+    }
+
+    if (selectedProfile.mode === "tempmail") {
+      if (tempMailStatusScope === "all") {
+        const [inboxKey, originalMessageId] = messageId.split("::");
+        if (!inboxKey || !originalMessageId) {
+          return;
+        }
+
+        const nextProfiles = profiles.map((profile) => {
+          if (profile.id !== selectedProfile.id) {
+            return profile;
+          }
+
+          const nextStates = profile.tempMailInboxStates.map((state) =>
+            (state.inbox.addressJwt || state.inbox.address) === inboxKey &&
+            !state.readMessageIds.includes(originalMessageId)
+              ? {
+                  ...state,
+                  readMessageIds: mergeReadMessageIds(state.readMessageIds, [originalMessageId])
+                }
+              : state
+          );
+
+          return updateProfileTimestamp({
+            ...profile,
+            tempMailInboxStates: nextStates
+          });
+        });
+
+        setProfiles(nextProfiles);
+        await saveProfiles(nextProfiles);
+        return;
+      }
+
+      if (selectedProfile.readMessageIds.includes(messageId)) {
+        return;
+      }
+
+      const nextProfiles = profiles.map((profile) =>
+        profile.id === selectedProfile.id
+          ? syncCurrentTempMailInboxState(profile, (state) => ({
+              ...state,
+              readMessageIds: mergeReadMessageIds(state.readMessageIds, [messageId])
+            }))
+          : profile
+      );
+
+      setProfiles(nextProfiles);
+      await saveProfiles(nextProfiles);
+      return;
+    }
+
+    if (selectedProfile.readMessageIds.includes(messageId)) {
+      return;
+    }
+
+    const nextProfiles = profiles.map((profile) =>
+      profile.id === selectedProfile.id
+        ? updateProfileTimestamp({
+            ...profile,
+            readMessageIds: mergeReadMessageIds(profile.readMessageIds, [messageId])
+          })
+        : profile
+    );
+
+    setProfiles(nextProfiles);
+    await saveProfiles(nextProfiles);
   }
 
   async function handleToggleTheme() {
@@ -426,6 +870,40 @@ export function OptionsApp() {
     await persistProfiles(nextProfiles, profile.id);
     setPanelView("edit");
     setNotice({ type: "success", message: "已新增一个配置。" });
+  }
+
+  async function handleDeleteProfile() {
+    if (!selectedProfile) {
+      return;
+    }
+
+    setBusyAction("delete");
+
+    try {
+      const remainingProfiles = profiles.filter((profile) => profile.id !== selectedProfile.id);
+      const fallbackProfile =
+        remainingProfiles[0] || createEmptyProfile("默认 Duck");
+      const nextProfiles = remainingProfiles.length ? remainingProfiles : [fallbackProfile];
+      const nextSelectedId = nextProfiles[0].id;
+
+      await persistProfiles(nextProfiles, nextSelectedId);
+      setPanelView("edit");
+      setDeleteTargetProfileId(null);
+      setNotice({
+        type: "success",
+        message:
+          remainingProfiles.length > 0
+            ? "当前配置已删除。"
+            : "当前配置已删除，已自动补一个默认配置。"
+      });
+    } catch (error) {
+      setNotice({
+        type: "error",
+        message: error instanceof Error ? error.message : "删除配置失败。"
+      });
+    } finally {
+      setBusyAction(null);
+    }
   }
 
   async function handleSaveProfile() {
@@ -563,15 +1041,12 @@ export function OptionsApp() {
       const inbox = await createTempMailInbox(selectedProfile.tempMail);
       const nextProfiles = profiles.map((profile) =>
         profile.id === selectedProfile.id
-          ? updateProfileTimestamp({
-              ...profile,
-              inbox
-            })
+          ? applyTempMailInbox(profile, inbox)
           : profile
       );
 
       await persistProfiles(nextProfiles, selectedProfile.id);
-      setNotice({ type: "success", message: `已创建收件箱：${inbox.address}` });
+      setNotice({ type: "success", message: `已创建收件箱：${inbox.address}，请重新同步这一个邮箱的邮件。` });
     } catch (error) {
       setNotice({
         type: "error",
@@ -582,10 +1057,29 @@ export function OptionsApp() {
     }
   }
 
+  async function handleSelectTempMailInbox(inbox: TempMailInbox) {
+    if (!selectedProfile || sameTempMailInbox(selectedProfile.inbox, inbox)) {
+      setTempMailStatusScope("current");
+      return;
+    }
+
+    const nextProfiles = profiles.map((profile) =>
+      profile.id === selectedProfile.id
+        ? applyTempMailInbox(profile, inbox)
+        : profile
+    );
+
+    await persistProfiles(nextProfiles, selectedProfile.id);
+    setTempMailStatusScope("current");
+    setNotice({ type: "info", message: `已切换到 ${inbox.address}，请重新同步当前邮箱的邮件。` });
+  }
+
   async function handleSyncMessages() {
     if (!selectedProfile || !selectedProfile.inbox?.addressJwt.trim()) {
-      setNotice({ type: "error", message: "请先创建或填写收件箱信息。" });
-      return;
+      if (!(selectedProfile?.mode === "tempmail" && tempMailStatusScope === "all" && tempMailHistoryOptions.length)) {
+        setNotice({ type: "error", message: "请先创建或填写收件箱信息。" });
+        return;
+      }
     }
 
     const normalizedProfile = patchDuckProfileTempMailFromInbox(selectedProfile);
@@ -604,29 +1098,100 @@ export function OptionsApp() {
     setBusyAction("sync");
 
     try {
-      const messages = await fetchTempMailMessageSummaries({
-        ...normalizedProfile.tempMail,
-        ...inbox
-      });
+      if (selectedProfile.mode === "tempmail" && tempMailStatusScope === "all") {
+        const nextStates = await Promise.all(
+          tempMailHistoryOptions.map(async ({ inbox }) => {
+            const currentState =
+              selectedProfile.tempMailInboxStates.find((state) => sameTempMailInbox(state.inbox, inbox)) ||
+              buildTempMailInboxState(inbox);
+            const { messages, totalCount } = await fetchTempMailMessageSummaryPage(
+              {
+                ...normalizedProfile.tempMail,
+                ...inbox
+              },
+              {
+                limit: MESSAGE_PAGE_SIZE,
+                offset: 0
+              }
+            );
+
+            return {
+              ...currentState,
+              inbox,
+              messages,
+              messageTotal: totalCount ?? messages.length,
+              readMessageIds: mergeReadMessageIds(currentState.readMessageIds),
+              lastSyncedAt: new Date().toISOString()
+            };
+          })
+        );
+
+        const currentInboxState =
+          (selectedProfile.inbox &&
+            nextStates.find((state) => sameTempMailInbox(state.inbox, selectedProfile.inbox))) ||
+          null;
+
+        const nextProfiles = profiles.map((profile) =>
+          profile.id === selectedProfile.id
+            ? updateProfileTimestamp({
+                ...profile,
+                tempMail: normalizedProfile.tempMail,
+                tempMailInboxStates: nextStates,
+                messages: currentInboxState?.messages || profile.messages,
+                messageTotal: currentInboxState?.messageTotal ?? profile.messageTotal,
+                readMessageIds: currentInboxState?.readMessageIds || profile.readMessageIds,
+                lastSyncedAt: currentInboxState?.lastSyncedAt || profile.lastSyncedAt
+              })
+            : profile
+        );
+
+        await persistProfiles(nextProfiles, selectedProfile.id);
+        setHasMoreStatusMessages(false);
+        setNotice({
+          type: "success",
+          message: `已同步 ${nextStates.length} 个历史邮箱，共加载 ${nextStates.reduce((total, state) => total + state.messages.length, 0)} 封邮件。`
+        });
+        return;
+      }
+
+      const { messages, totalCount } = await fetchTempMailMessageSummaryPage(
+        {
+          ...normalizedProfile.tempMail,
+          ...inbox
+        },
+        {
+          limit: MESSAGE_PAGE_SIZE,
+          offset: 0
+        }
+      );
 
       const nextProfiles = profiles.map((profile) =>
         profile.id === selectedProfile.id
-          ? updateProfileTimestamp({
-              ...profile,
-              tempMail: normalizedProfile.tempMail,
-              messages,
-              readMessageIds: profile.readMessageIds.filter((id) =>
-                messages.some((message) => message.id === id)
-              ),
-              lastSyncedAt: new Date().toISOString()
-            })
+          ? syncCurrentTempMailInboxState(
+              {
+                ...profile,
+                tempMail: normalizedProfile.tempMail
+              },
+              (state) => ({
+                ...state,
+                inbox,
+                messages,
+                messageTotal: totalCount ?? messages.length,
+                readMessageIds: mergeReadMessageIds(state.readMessageIds),
+                lastSyncedAt: new Date().toISOString()
+              })
+            )
           : profile
       );
 
       await persistProfiles(nextProfiles, selectedProfile.id);
+      const resolvedTotal = totalCount ?? messages.length;
+      setHasMoreStatusMessages(getHasMoreMessages(resolvedTotal, messages.length, messages.length));
       setNotice({
         type: "success",
-        message: messages.length ? `已同步 ${messages.length} 封邮件。` : "当前没有同步到邮件。"
+        message: messages.length
+          ? `已同步 ${messages.length} 封邮件，当前已加载 ${messages.length}${resolvedTotal > messages.length ? ` / ${resolvedTotal}` : ""}。`
+          : "当前没有同步到邮件。"
       });
     } catch (error) {
       setNotice({
@@ -637,6 +1202,99 @@ export function OptionsApp() {
       setBusyAction(null);
     }
   }
+
+  async function handleLoadMoreMessages() {
+    if (!selectedProfile || !selectedProfile.inbox?.addressJwt.trim() || loadingMoreMessages) {
+      return;
+    }
+
+    const normalizedProfile = patchDuckProfileTempMailFromInbox(selectedProfile);
+    const inbox = normalizedProfile.inbox;
+    if (!inbox?.addressJwt.trim()) {
+      return;
+    }
+
+    setLoadingMoreMessages(true);
+
+    try {
+      const { messages: nextPageMessages, totalCount } = await fetchTempMailMessageSummaryPage(
+        {
+          ...normalizedProfile.tempMail,
+          ...inbox
+        },
+        {
+          limit: MESSAGE_PAGE_SIZE,
+          offset: selectedProfile.messages.length
+        }
+      );
+
+      const mergedMessages = mergeMailSummaries(selectedProfile.messages, nextPageMessages);
+
+      const nextProfiles = profiles.map((profile) =>
+        profile.id === selectedProfile.id
+          ? syncCurrentTempMailInboxState(
+              {
+                ...profile,
+                tempMail: normalizedProfile.tempMail
+              },
+              (state) => ({
+                ...state,
+                inbox,
+                messages: mergedMessages,
+                messageTotal: totalCount ?? Math.max(state.messageTotal, mergedMessages.length),
+                readMessageIds: mergeReadMessageIds(state.readMessageIds),
+                lastSyncedAt: new Date().toISOString()
+              })
+            )
+          : profile
+      );
+
+      await persistProfiles(nextProfiles, selectedProfile.id);
+      const resolvedTotal = totalCount ?? Math.max(selectedProfile.messageTotal, mergedMessages.length);
+      setHasMoreStatusMessages(
+        getHasMoreMessages(resolvedTotal, mergedMessages.length, nextPageMessages.length)
+      );
+      setNotice({
+        type: "success",
+        message: nextPageMessages.length
+          ? `已追加 ${nextPageMessages.length} 封邮件，当前已加载 ${mergedMessages.length}${resolvedTotal > mergedMessages.length ? ` / ${resolvedTotal}` : ""}。`
+          : "已经到底了，没有更多邮件。"
+      });
+    } catch (error) {
+      setNotice({
+        type: "error",
+        message: error instanceof Error ? error.message : "加载更多邮件失败。"
+      });
+    } finally {
+      setLoadingMoreMessages(false);
+    }
+  }
+
+  useEffect(() => {
+    if (selectedProfile?.mode !== "tempmail") {
+      setTempMailStatusScope("current");
+    }
+  }, [selectedProfile?.id, selectedProfile?.mode]);
+
+  useEffect(() => {
+    if (!selectedProfile) {
+      setHasMoreStatusMessages(false);
+      return;
+    }
+
+    if (selectedProfile.mode === "tempmail" && tempMailStatusScope === "all") {
+      setHasMoreStatusMessages(false);
+      return;
+    }
+
+    setHasMoreStatusMessages(
+      getHasMoreMessages(
+        selectedProfile.messageTotal,
+        selectedProfile.messages.length,
+        selectedProfile.messages.length
+      )
+    );
+  }, [selectedProfile, tempMailStatusScope]);
 
   if (loading || !selectedProfile) {
     return (
@@ -726,6 +1384,13 @@ export function OptionsApp() {
                     <div className="mode-summary-desc">当前配置默认只展示编辑项，不显示状态卡片和邮件列表。</div>
                   </div>
                   <div className="mode-action-row">
+                    <button
+                      className="mode-danger-btn"
+                      disabled={busyAction !== null}
+                      onClick={() => setDeleteTargetProfileId(selectedProfile.id)}
+                    >
+                      {busyAction === "delete" ? "删除中..." : "删除当前配置"}
+                    </button>
                     <button className="mode-secondary-btn" onClick={() => void handleSaveProfile()}>
                       {busyAction === "save" ? "保存中..." : "保存当前配置"}
                     </button>
@@ -1041,6 +1706,7 @@ export function OptionsApp() {
                       />
                     </label>
                   </div>
+
                 </section>
               )}
             </>
@@ -1065,7 +1731,7 @@ export function OptionsApp() {
                   </span>
                   <span className="mode-status-pill">
                     最近同步
-                    <strong>{formatAbsoluteDateTime(selectedProfile.lastSyncedAt)}</strong>
+                    <strong>{formatAbsoluteDateTime(statusScopeData?.lastSyncedAt || selectedProfile.lastSyncedAt)}</strong>
                   </span>
                 </div>
 
@@ -1130,12 +1796,45 @@ export function OptionsApp() {
                     <div className="mode-section-title">邮件列表</div>
                     <div className="mode-section-desc">状态页里可以直接查看当前配置同步到的邮件内容。</div>
                   </div>
+                  {selectedProfile.mode === "tempmail" ? (
+                    <div className="mode-status-mailbox-switch">
+                      <span>查看范围</span>
+                      <select
+                        value={
+                          tempMailStatusScope === "all"
+                            ? "all"
+                            : selectedProfile.inbox?.addressJwt || selectedProfile.inbox?.address || ""
+                        }
+                        onChange={(event) => {
+                          const nextValue = event.target.value;
+                          if (nextValue === "all") {
+                            setTempMailStatusScope("all");
+                            return;
+                          }
+
+                          const nextInbox = tempMailHistoryOptions.find(({ value }) => value === nextValue)?.inbox;
+                          if (!nextInbox) {
+                            return;
+                          }
+
+                          void handleSelectTempMailInbox(nextInbox);
+                        }}
+                      >
+                        <option value="all">全部历史邮箱</option>
+                        {tempMailHistoryOptions.map(({ value, inbox }) => (
+                          <option key={value} value={value}>
+                            {inbox.address}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  ) : null}
                 </div>
 
                 <div className="mode-mail-counter">
                   <span className="mode-status-pill">
-                    总数
-                    <strong>{stats.total}</strong>
+                    已加载
+                    <strong>{stats.loadedLabel}</strong>
                   </span>
                   <span className="mode-status-pill">
                     未读
@@ -1144,14 +1843,65 @@ export function OptionsApp() {
                 </div>
 
                 <StatusMailList
-                  messages={selectedProfile.messages}
-                  readMessageIds={selectedProfile.readMessageIds}
+                  messages={statusScopeData?.messages || []}
+                  readMessageIds={statusScopeData?.readMessageIds || []}
+                  theme={theme}
+                  hasMore={selectedProfile.mode === "tempmail" && tempMailStatusScope === "all" ? false : hasMoreStatusMessages}
+                  loadingMore={loadingMoreMessages}
+                  onLoadMore={handleLoadMoreMessages}
+                  onSelectMessage={handleSelectStatusMessage}
+                  showRecipientAddress={statusScopeData?.showRecipientAddress}
                 />
               </section>
             </>
           )}
         </section>
       </div>
+
+      {deleteTargetProfileId === selectedProfile.id ? (
+        <div
+          className="mode-dialog-backdrop"
+          onClick={() => {
+            if (busyAction !== "delete") {
+              setDeleteTargetProfileId(null);
+            }
+          }}
+        >
+          <div
+            className="mode-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-profile-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="mode-dialog-eyebrow">删除确认</div>
+            <h3 id="delete-profile-title" className="mode-dialog-title">
+              确定删除当前配置？
+            </h3>
+            <p className="mode-dialog-text">
+              配置 <strong>{selectedProfile.name || "未命名配置"}</strong> 会从本地设置里移除，相关收件箱参数和同步记录也会一起删除。
+            </p>
+            <div className="mode-dialog-actions">
+              <button
+                type="button"
+                className="mode-ghost-btn"
+                disabled={busyAction === "delete"}
+                onClick={() => setDeleteTargetProfileId(null)}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="mode-danger-btn"
+                disabled={busyAction === "delete"}
+                onClick={() => void handleDeleteProfile()}
+              >
+                {busyAction === "delete" ? "删除中..." : "确认删除"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </main>
   );
 }

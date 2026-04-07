@@ -9,5 +9,6 @@ export type MailSummary = {
   preview: string;
   content?: string;
   htmlContent?: string;
+  inlineResourceMap?: Record<string, string>;
   raw?: string;
 };

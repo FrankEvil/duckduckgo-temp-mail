@@ -1,7 +1,15 @@
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 
 import { createDuckAlias } from "../features/ddg/client";
-import { fetchTempMailMessageSummaries } from "../features/temp-mail/client";
+import {
+  createTempMailInbox,
+  fetchTempMailMessageSummaryPage
+} from "../features/temp-mail/client";
+import {
+  EmailHtmlFrame,
+  extractMailbox,
+  normalizePlainTextContent
+} from "../shared/components/EmailHtmlFrame";
 import {
   PopupTheme,
   loadActiveProfileId,
@@ -11,7 +19,8 @@ import {
   savePopupTheme,
   saveProfiles
 } from "../shared/storage/local";
-import { DuckProfile } from "../shared/types/profile";
+import { DuckProfile, TempMailInboxState } from "../shared/types/profile";
+import { TempMailInbox } from "../shared/types/tempMail";
 
 type Feedback = {
   type: "success" | "error" | "info";
@@ -91,185 +100,100 @@ function getSelectedProfile(profiles: DuckProfile[], selectedProfileId: string |
   return profiles.find((item) => item.id === selectedProfileId) ?? profiles[0] ?? null;
 }
 
-function extractMailbox(value: string) {
-  const bracketMatch = value.match(/<([^>]+)>/);
-
-  if (bracketMatch?.[1]) {
-    return bracketMatch[1].trim();
+function sameTempMailInbox(left: TempMailInbox | null | undefined, right: TempMailInbox | null | undefined) {
+  if (!left || !right) {
+    return false;
   }
-
-  const emailMatch = value.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
-  return emailMatch?.[0] || value.trim();
-}
-
-function normalizePlainTextContent(value: string) {
-  return value
-    .replace(/\u00a0/g, " ")
-    .split(/\r?\n/)
-    .map((line) => line.replace(/[ \t]+/g, " ").trim())
-    .join("\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-function buildEmailHtmlDocument(html: string) {
-  const parser = new DOMParser();
-  const document = parser.parseFromString(html, "text/html");
-
-  for (const element of Array.from(document.querySelectorAll("script, iframe, object, embed"))) {
-    element.remove();
-  }
-
-  for (const metaRefresh of Array.from(document.querySelectorAll('meta[http-equiv="refresh" i]'))) {
-    metaRefresh.remove();
-  }
-
-  for (const formElement of Array.from(
-    document.querySelectorAll("form, button, input, select, textarea")
-  )) {
-    formElement.replaceWith(...Array.from(formElement.childNodes));
-  }
-
-  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
-  const elements: Element[] = [];
-
-  while (walker.nextNode()) {
-    elements.push(walker.currentNode as Element);
-  }
-
-  for (const element of elements) {
-    for (const attribute of Array.from(element.attributes)) {
-      const attributeName = attribute.name.toLowerCase();
-      const attributeValue = attribute.value.trim();
-
-      if (attributeName.startsWith("on")) {
-        element.removeAttribute(attribute.name);
-        continue;
-      }
-
-      if (attributeName === "href") {
-        if (
-          !/^https?:/i.test(attributeValue) &&
-          !/^mailto:/i.test(attributeValue) &&
-          !/^tel:/i.test(attributeValue) &&
-          !/^#/i.test(attributeValue)
-        ) {
-          element.removeAttribute(attribute.name);
-          continue;
-        }
-
-        element.setAttribute("target", "_blank");
-        element.setAttribute("rel", "noreferrer noopener");
-      }
-    }
-  }
-
-  const head = document.head.innerHTML.trim();
-  const body = document.body.innerHTML.trim();
-
-  return `<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <base target="_blank" />
-    <style>
-      html,
-      body {
-        margin: 0;
-        padding: 0;
-      }
-    </style>
-    ${head}
-    <style>
-
-      body {
-        overflow-wrap: break-word;
-      }
-
-      img {
-        max-width: 100% !important;
-        height: auto !important;
-      }
-
-      table {
-        max-width: 100% !important;
-      }
-    </style>
-  </head>
-  <body>${body}</body>
-</html>`;
-}
-
-type EmailHtmlFrameProps = {
-  html: string;
-  title: string;
-};
-
-function EmailHtmlFrame({ html, title }: EmailHtmlFrameProps) {
-  const iframeRef = useRef<HTMLIFrameElement | null>(null);
-  const [frameHeight, setFrameHeight] = useState(320);
-  const srcDoc = buildEmailHtmlDocument(html);
-
-  function syncFrameHeight() {
-    const iframe = iframeRef.current;
-    const document = iframe?.contentDocument;
-    const body = document?.body;
-    const root = document?.documentElement;
-
-    if (!iframe || !body || !root) {
-      return;
-    }
-
-    const nextHeight = Math.max(
-      body.scrollHeight,
-      body.offsetHeight,
-      root.scrollHeight,
-      root.offsetHeight,
-      160
-    );
-
-    setFrameHeight(nextHeight);
-  }
-
-  function handleLoad() {
-    syncFrameHeight();
-
-    const document = iframeRef.current?.contentDocument;
-    if (!document) {
-      return;
-    }
-
-    for (const image of Array.from(document.images)) {
-      if (image.complete) {
-        continue;
-      }
-
-      image.addEventListener("load", syncFrameHeight, { once: true });
-      image.addEventListener("error", syncFrameHeight, { once: true });
-    }
-
-    window.setTimeout(syncFrameHeight, 60);
-    window.setTimeout(syncFrameHeight, 220);
-    window.setTimeout(syncFrameHeight, 600);
-  }
-
-  useEffect(() => {
-    setFrameHeight(320);
-  }, [srcDoc]);
 
   return (
-    <iframe
-      ref={iframeRef}
-      className="popup-html-frame"
-      title={title}
-      sandbox="allow-popups allow-popups-to-escape-sandbox allow-same-origin"
-      loading="lazy"
-      srcDoc={srcDoc}
-      style={{ height: `${frameHeight}px` }}
-      onLoad={handleLoad}
-    />
+    (left.addressJwt && right.addressJwt && left.addressJwt === right.addressJwt) ||
+    (!!left.address && !!right.address && left.address === right.address)
   );
+}
+
+function mergeTempMailInboxes(currentInboxes: TempMailInbox[], inbox: TempMailInbox) {
+  return [inbox, ...currentInboxes.filter((item) => !sameTempMailInbox(item, inbox))];
+}
+
+function buildTempMailInboxState(
+  inbox: TempMailInbox,
+  partial?: Partial<TempMailInboxState>
+): TempMailInboxState {
+  return {
+    inbox,
+    messages: partial?.messages || [],
+    messageTotal:
+      typeof partial?.messageTotal === "number" && partial.messageTotal >= 0
+        ? partial.messageTotal
+        : (partial?.messages || []).length,
+    readMessageIds: partial?.readMessageIds || [],
+    lastSyncedAt: partial?.lastSyncedAt || null
+  };
+}
+
+function getCurrentTempMailInboxState(profile: DuckProfile) {
+  if (!profile.inbox) {
+    return null;
+  }
+
+  return (
+    profile.tempMailInboxStates.find((state) => sameTempMailInbox(state.inbox, profile.inbox)) ||
+    buildTempMailInboxState(profile.inbox, {
+      messages: profile.messages,
+      messageTotal: profile.messageTotal,
+      readMessageIds: profile.readMessageIds,
+      lastSyncedAt: profile.lastSyncedAt
+    })
+  );
+}
+
+function syncCurrentTempMailInboxState(
+  profile: DuckProfile,
+  updater: (state: TempMailInboxState) => TempMailInboxState
+) {
+  if (profile.mode !== "tempmail" || !profile.inbox) {
+    const fallbackState = updater(
+      buildTempMailInboxState(
+        {
+          address: "",
+          addressJwt: "",
+          createdAt: new Date().toISOString()
+        },
+        {
+          messages: profile.messages,
+          messageTotal: profile.messageTotal,
+          readMessageIds: profile.readMessageIds,
+          lastSyncedAt: profile.lastSyncedAt
+        }
+      )
+    );
+
+    return {
+      ...profile,
+      messages: fallbackState.messages,
+      messageTotal: fallbackState.messageTotal,
+      readMessageIds: fallbackState.readMessageIds,
+      lastSyncedAt: fallbackState.lastSyncedAt,
+      updatedAt: new Date().toISOString()
+    };
+  }
+
+  const currentState = getCurrentTempMailInboxState(profile) || buildTempMailInboxState(profile.inbox);
+  const nextState = updater(currentState);
+
+  return {
+    ...profile,
+    tempMailInboxes: mergeTempMailInboxes(profile.tempMailInboxes, nextState.inbox),
+    tempMailInboxStates: [
+      nextState,
+      ...profile.tempMailInboxStates.filter((state) => !sameTempMailInbox(state.inbox, profile.inbox))
+    ],
+    messages: nextState.messages,
+    messageTotal: nextState.messageTotal,
+    readMessageIds: nextState.readMessageIds,
+    lastSyncedAt: nextState.lastSyncedAt,
+    updatedAt: new Date().toISOString()
+  };
 }
 
 export function PopupApp() {
@@ -381,6 +305,13 @@ export function PopupApp() {
     selectedProfile?.aliases[0] ||
     null;
   const readMessageIds = selectedProfile?.readMessageIds || [];
+  const isTempMailMode = selectedProfile?.mode === "tempmail";
+  const currentMailboxAddress = isTempMailMode
+    ? selectedProfile?.inbox?.address || ""
+    : currentAlias?.address || "";
+  const currentMailboxPlaceholder = isTempMailMode
+    ? "还没有创建 Temp Mail 收件箱"
+    : "还没有生成 Duck 邮箱";
 
   useEffect(() => {
     if (!selectedProfile) {
@@ -464,6 +395,51 @@ export function PopupApp() {
     }
   }
 
+  async function handleCreateInbox() {
+    if (!selectedProfile) {
+      setFeedback({ type: "error", message: "请先在设置页添加 Temp Mail 配置。" });
+      return;
+    }
+
+    if (!selectedProfile.tempMail.baseUrl.trim() || !selectedProfile.tempMail.domain.trim()) {
+      setFeedback({ type: "error", message: "请先在设置页填写 Temp Mail Base URL 和 Domain。" });
+      return;
+    }
+
+    if (!selectedProfile.tempMail.adminAuth.trim()) {
+      setFeedback({ type: "error", message: "请先在设置页填写 Temp Mail Admin Auth。" });
+      return;
+    }
+
+    setBusyAction("generate");
+
+    try {
+      const inbox = await createTempMailInbox(selectedProfile.tempMail);
+      const nextProfiles = profiles.map((profile) =>
+        profile.id === selectedProfile.id
+          ? syncCurrentTempMailInboxState(
+              {
+                ...profile,
+                inbox
+              },
+              () => buildTempMailInboxState(inbox)
+            )
+          : profile
+      );
+
+      await persistProfiles(nextProfiles, selectedProfile.id);
+      setExpandedMessageId(null);
+      setFeedback({ type: "success", message: `已创建 ${inbox.address}，请刷新同步这个邮箱的邮件` });
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message: error instanceof Error ? error.message : "创建收件箱失败。"
+      });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   async function handleRefreshMessages() {
     if (!selectedProfile) {
       setFeedback({ type: "error", message: "请先在设置页添加 Duck。" });
@@ -478,26 +454,27 @@ export function PopupApp() {
     setBusyAction("refresh");
 
     try {
-      const messages = await fetchTempMailMessageSummaries({
-        ...selectedProfile.tempMail,
-        ...selectedProfile.inbox
-      });
+      const { messages, totalCount } = await fetchTempMailMessageSummaryPage(
+        {
+          ...selectedProfile.tempMail,
+          ...selectedProfile.inbox
+        },
+        {
+          limit: 20,
+          offset: 0
+        }
+      );
 
       const nextProfiles = profiles.map((profile) =>
         profile.id === selectedProfile.id
-          ? {
-              ...profile,
+          ? syncCurrentTempMailInboxState(profile, (state) => ({
+              ...state,
+              inbox: selectedProfile.inbox!,
               messages,
-              readMessageIds: messages
-                .map((message) => message.id)
-                .filter(
-                  (messageId) =>
-                    selectedProfile.readMessageIds.includes(messageId) &&
-                    selectedProfile.messages.some((item) => item.id === messageId)
-                ),
-              lastSyncedAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString()
-            }
+              messageTotal: totalCount ?? messages.length,
+              readMessageIds: Array.from(new Set(state.readMessageIds)),
+              lastSyncedAt: new Date().toISOString()
+            }))
           : profile
       );
 
@@ -518,7 +495,7 @@ export function PopupApp() {
   }
 
   async function handleCopyEmail(event: ReactMouseEvent<HTMLButtonElement>) {
-    if (!currentAlias?.address) {
+    if (!currentMailboxAddress) {
       const frameRect = frameRef.current?.getBoundingClientRect();
       setCopyHint({
         x: frameRect ? event.clientX - frameRect.left : 160,
@@ -530,7 +507,7 @@ export function PopupApp() {
     }
 
     try {
-      await navigator.clipboard.writeText(currentAlias.address);
+      await navigator.clipboard.writeText(currentMailboxAddress);
       const frameRect = frameRef.current?.getBoundingClientRect();
       setCopyHint({
         x: frameRect ? event.clientX - frameRect.left : 160,
@@ -566,10 +543,10 @@ export function PopupApp() {
 
     const nextProfiles = profiles.map((profile) =>
       profile.id === selectedProfile.id
-        ? {
-            ...profile,
-            readMessageIds: [...profile.readMessageIds, messageId]
-          }
+        ? syncCurrentTempMailInboxState(profile, (state) => ({
+            ...state,
+            readMessageIds: Array.from(new Set([...state.readMessageIds, messageId]))
+          }))
         : profile
     );
 
@@ -682,8 +659,8 @@ export function PopupApp() {
           <button
             className="popup-mini-button primary"
             disabled={busyAction !== null}
-            onClick={() => void handleGenerateAlias()}
-            title="生成邮箱"
+            onClick={() => void (isTempMailMode ? handleCreateInbox() : handleGenerateAlias())}
+            title={isTempMailMode ? "创建收件箱" : "生成邮箱"}
           >
             +
           </button>
@@ -709,12 +686,12 @@ export function PopupApp() {
           <button
             type="button"
             className="popup-mailbox-row popup-mailbox-copy"
-            disabled={!currentAlias?.address}
+            disabled={!currentMailboxAddress}
             onClick={(event) => void handleCopyEmail(event)}
-            title={currentAlias?.address ? "点击复制邮箱地址" : "还没有生成 Duck 邮箱"}
+            title={currentMailboxAddress ? "点击复制邮箱地址" : currentMailboxPlaceholder}
           >
             <div className="popup-mailbox-value">
-              {currentAlias?.address || "还没有生成 Duck 邮箱"}
+              {currentMailboxAddress || currentMailboxPlaceholder}
             </div>
           </button>
         </div>
@@ -816,6 +793,9 @@ export function PopupApp() {
                         <EmailHtmlFrame
                           html={message.htmlContent}
                           title={`${message.subject || "邮件"} HTML 视图`}
+                          theme={theme}
+                          inlineResourceMap={message.inlineResourceMap}
+                          className="popup-html-frame"
                         />
                       ) : (
                         <pre>{textContent}</pre>

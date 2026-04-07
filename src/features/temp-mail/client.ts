@@ -4,6 +4,7 @@ import {
   TempMailMailboxSession,
   TempMailMessage,
   TempMailMessageListResponse,
+  TempMailMessagePage,
   TempMailMessageQuery,
   TempMailMessageSummary
 } from "../../shared/types/tempMail";
@@ -309,7 +310,62 @@ function decodeTransferBody(body: string, encoding: string, charset: string) {
 type ParsedMimeBodies = {
   text: string;
   html: string;
+  inlineResourceMap: Record<string, string>;
 };
+
+function normalizeInlineResourceId(value: string) {
+  return value.trim().replace(/^cid:/i, "").replace(/^<|>$/g, "").trim().toLowerCase();
+}
+
+function decodeQuotedPrintableBytes(value: string) {
+  const normalized = value.replace(/=\r?\n/g, "");
+  const bytes: number[] = [];
+
+  for (let index = 0; index < normalized.length; index += 1) {
+    const current = normalized[index];
+    if (current === "=" && /^[0-9A-F]{2}$/i.test(normalized.slice(index + 1, index + 3))) {
+      bytes.push(Number.parseInt(normalized.slice(index + 1, index + 3), 16));
+      index += 2;
+      continue;
+    }
+
+    bytes.push(current.charCodeAt(0));
+  }
+
+  return new Uint8Array(bytes);
+}
+
+function encodeBase64(bytes: Uint8Array) {
+  let binary = "";
+
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+
+  return btoa(binary);
+}
+
+function buildInlineResourceDataUrl(body: string, encoding: string, contentType: string) {
+  const normalizedEncoding = encoding.trim().toLowerCase();
+
+  try {
+    if (normalizedEncoding === "base64") {
+      const compact = body.replace(/\s+/g, "");
+      atob(compact);
+      return `data:${contentType};base64,${compact}`;
+    }
+
+    if (normalizedEncoding === "quoted-printable") {
+      const bytes = decodeQuotedPrintableBytes(body);
+      return `data:${contentType};base64,${encodeBase64(bytes)}`;
+    }
+
+    const bytes = new TextEncoder().encode(body);
+    return `data:${contentType};base64,${encodeBase64(bytes)}`;
+  } catch {
+    return "";
+  }
+}
 
 function parseMultipartBody(body: string, boundary: string) {
   const normalized = body.replace(/\r\n/g, "\n");
@@ -335,9 +391,13 @@ function parseMultipartBody(body: string, boundary: string) {
   return parsedParts.reduce<ParsedMimeBodies>(
     (result, part) => ({
       text: result.text || part.text,
-      html: result.html || part.html
+      html: result.html || part.html,
+      inlineResourceMap: {
+        ...result.inlineResourceMap,
+        ...part.inlineResourceMap
+      }
     }),
-    { text: "", html: "" }
+    { text: "", html: "", inlineResourceMap: {} }
   );
 }
 
@@ -350,47 +410,64 @@ function parseMimeBodies(raw: string): ParsedMimeBodies {
 
   if (/multipart\//i.test(contentType)) {
     const boundary = extractBoundary(contentType);
-    return boundary ? parseMultipartBody(body, boundary) : { text: "", html: "" };
+    return boundary ? parseMultipartBody(body, boundary) : { text: "", html: "", inlineResourceMap: {} };
   }
 
   const decodedBody = decodeTransferBody(body, transferEncoding, charset).trim();
+  const contentId = normalizeInlineResourceId(getHeaderValue(headers, "content-id"));
+  const contentLocation = getHeaderValue(headers, "content-location").trim();
 
   if (/message\/rfc822/i.test(contentType)) {
     return parseMimeBodies(decodedBody);
   }
 
   if (/text\/html/i.test(contentType)) {
-    return { text: cleanMailText(decodedBody), html: decodedBody };
+    return { text: cleanMailText(decodedBody), html: decodedBody, inlineResourceMap: {} };
   }
 
   if (/text\/plain/i.test(contentType) || !contentType) {
-    return { text: decodedBody, html: "" };
+    return { text: decodedBody, html: "", inlineResourceMap: {} };
   }
 
-  return { text: "", html: "" };
+  if (contentId && /^(image|audio|video)\//i.test(contentType)) {
+    const dataUrl = buildInlineResourceDataUrl(body, transferEncoding, contentType);
+    return {
+      text: "",
+      html: "",
+      inlineResourceMap: dataUrl
+        ? {
+            [contentId]: dataUrl,
+            ...(contentLocation ? { [normalizeInlineResourceId(contentLocation)]: dataUrl } : {})
+          }
+        : {}
+    };
+  }
+
+  return { text: "", html: "", inlineResourceMap: {} };
 }
 
 function resolveMimeBodies(message: TempMailMessage): ParsedMimeBodies {
   const directText = typeof message.text === "string" ? message.text.trim() : "";
   const directHtml = typeof message.html === "string" ? message.html.trim() : "";
-
-  if (directText || directHtml) {
-    return {
-      text: directText,
-      html: directHtml
-    };
-  }
-
   const rawSource =
     (typeof message.raw === "string" && message.raw.trim()) ||
     (typeof message.source === "string" && message.source.trim()) ||
     "";
+  const parsedRaw = rawSource ? parseMimeBodies(rawSource) : { text: "", html: "", inlineResourceMap: {} };
 
-  if (!rawSource) {
-    return { text: "", html: "" };
+  if (directText || directHtml || Object.keys(parsedRaw.inlineResourceMap).length > 0) {
+    return {
+      text: directText || parsedRaw.text,
+      html: directHtml || parsedRaw.html,
+      inlineResourceMap: parsedRaw.inlineResourceMap
+    };
   }
 
-  return parseMimeBodies(rawSource);
+  if (!rawSource) {
+    return { text: "", html: "", inlineResourceMap: {} };
+  }
+
+  return parsedRaw;
 }
 
 function cleanMailText(value: string) {
@@ -555,6 +632,47 @@ function findMailArray(value: unknown): TempMailMessage[] {
   return [];
 }
 
+function extractTotalCount(value: unknown): number | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const parseCandidate = (candidate: unknown) => {
+    if (typeof candidate === "number" && Number.isFinite(candidate) && candidate >= 0) {
+      return candidate;
+    }
+
+    if (typeof candidate === "string") {
+      const parsed = Number(candidate);
+      if (Number.isFinite(parsed) && parsed >= 0) {
+        return parsed;
+      }
+    }
+
+    return null;
+  };
+  const directCount =
+    parseCandidate(record.count) ??
+    parseCandidate(record.total) ??
+    parseCandidate(record.totalCount);
+
+  if (directCount !== null && Number.isFinite(directCount) && directCount >= 0) {
+    return directCount;
+  }
+
+  const candidateKeys = ["data", "result", "results"];
+
+  for (const key of candidateKeys) {
+    const nested = extractTotalCount(record[key]);
+    if (nested !== null) {
+      return nested;
+    }
+  }
+
+  return null;
+}
+
 export function summarizeTempMailMessage(
   message: TempMailMessage,
   address: string,
@@ -596,6 +714,7 @@ export function summarizeTempMailMessage(
     preview,
     content,
     htmlContent,
+    inlineResourceMap: mimeBodies.inlineResourceMap,
     raw
   };
 }
@@ -639,10 +758,10 @@ export async function createTempMailInbox(
   };
 }
 
-export async function fetchTempMailMessages(
+export async function fetchTempMailMessagePage(
   session: TempMailMailboxSession,
   query: TempMailMessageQuery = {}
-): Promise<TempMailMessage[]> {
+): Promise<TempMailMessagePage> {
   const params = new URLSearchParams({
     limit: String(query.limit ?? 20),
     offset: String(query.offset ?? 0)
@@ -665,7 +784,32 @@ export async function fetchTempMailMessages(
     | TempMailMessageListResponse
     | Record<string, unknown>;
 
-  return findMailArray(data);
+  return {
+    messages: findMailArray(data),
+    totalCount: extractTotalCount(data)
+  };
+}
+
+export async function fetchTempMailMessages(
+  session: TempMailMailboxSession,
+  query: TempMailMessageQuery = {}
+): Promise<TempMailMessage[]> {
+  const result = await fetchTempMailMessagePage(session, query);
+  return result.messages;
+}
+
+export async function fetchTempMailMessageSummaryPage(
+  session: TempMailMailboxSession,
+  query: TempMailMessageQuery = {}
+): Promise<{ messages: TempMailMessageSummary[]; totalCount: number | null }> {
+  const result = await fetchTempMailMessagePage(session, query);
+
+  return {
+    messages: result.messages.map((message, index) =>
+      summarizeTempMailMessage(message, session.address, index)
+    ),
+    totalCount: result.totalCount
+  };
 }
 
 export async function fetchTempMailMessageSummaries(
