@@ -330,29 +330,48 @@ select {
   }
 }
 
-.popup-control-grid {
+.popup-workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 8px;
-  align-items: center;
 }
 
-.popup-control-grid.is-tempmail {
-  grid-template-columns: minmax(0, 1fr) auto auto auto;
+.popup-toolbar-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+
+.popup-profile-select {
+  min-width: 0;
+  flex: 1;
+}
+
+.popup-action-cluster {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  white-space: nowrap;
 }
 
 .popup-tempmail-tools {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 8px;
-  margin-top: 8px;
 }
 
 .popup-tempmail-custom-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) 160px auto;
   gap: 8px;
   align-items: center;
+}
+
+.popup-tempmail-history-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .popup-mailbox-combobox {
@@ -398,7 +417,7 @@ select {
 
 .popup-tempmail-meta {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 10px;
   margin-top: 8px;
@@ -410,6 +429,7 @@ select {
   min-width: 0;
   display: grid;
   gap: 4px;
+  flex: 1;
 }
 
 .popup-tempmail-meta-label {
@@ -420,7 +440,7 @@ select {
 
 .popup-tempmail-copy {
   min-width: 0;
-  max-width: 100%;
+  width: 100%;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -442,7 +462,7 @@ select {
 
 .popup-tempmail-copy-value {
   min-width: 0;
-  max-width: 210px;
+  flex: 1;
   font-size: 14px;
   font-weight: 800;
   line-height: 1.4;
@@ -458,6 +478,16 @@ select {
   font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.04em;
+}
+
+.popup-tempmail-meta-time {
+  flex: none;
+  min-width: 96px;
+  display: grid;
+  gap: 2px;
+  text-align: right;
+  white-space: nowrap;
+  line-height: 1.2;
 }
 
 .popup-select-shell {
@@ -602,6 +632,38 @@ select {
 
 .popup-mini-button-wide.is-active {
   box-shadow: inset 0 0 0 1px rgba(109, 146, 255, 0.22);
+}
+
+.popup-mini-button.is-active {
+  box-shadow: inset 0 0 0 1px rgba(109, 146, 255, 0.22);
+}
+
+.popup-theme-dark .popup-mini-button.is-active {
+  color: #8fe2ff;
+  background: rgba(20, 78, 104, 0.42);
+  border-color: rgba(126, 214, 255, 0.34);
+  box-shadow:
+    inset 0 0 0 1px rgba(126, 214, 255, 0.18),
+    0 0 0 1px rgba(126, 214, 255, 0.06);
+}
+
+.popup-theme-light .popup-mini-button.is-active {
+  color: #0d6fb4;
+  background: rgba(106, 196, 244, 0.16);
+  border-color: rgba(31, 123, 191, 0.2);
+  box-shadow:
+    inset 0 0 0 1px rgba(31, 123, 191, 0.08),
+    0 0 0 1px rgba(31, 123, 191, 0.04);
+}
+
+.popup-theme-dark .popup-mini-button.is-inactive {
+  color: #6f849f;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.popup-theme-light .popup-mini-button.is-inactive {
+  color: #7b8ea4;
+  background: rgba(255, 255, 255, 0.52);
 }
 
 .popup-mini-button.primary {
@@ -2463,6 +2525,15 @@ h2 {
 
 .mode-input::placeholder {
   color: #8596ad;
+}
+
+.mode-textarea {
+  min-height: 108px;
+  height: 120px;
+  padding: 14px 16px;
+  line-height: 1.5;
+  overflow-y: auto;
+  resize: vertical;
 }
 
 .mode-field.span-4 {

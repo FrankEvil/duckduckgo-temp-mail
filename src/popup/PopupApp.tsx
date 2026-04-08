@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 
 import { createDuckAlias } from "../features/ddg/client";
 import {
-  createTempMailInbox,
-  fetchTempMailMessageSummaryPage
+  createTempMailInbox
 } from "../features/temp-mail/client";
+import { fetchCurrentInboxMessageSummaryPage } from "../features/temp-mail/inboxSync";
 import {
   EmailHtmlFrame,
   extractMailbox,
@@ -20,7 +20,13 @@ import {
   saveProfiles
 } from "../shared/storage/local";
 import { DuckProfile, TempMailInboxState } from "../shared/types/profile";
-import { TempMailInbox } from "../shared/types/tempMail";
+import {
+  TEMP_MAIL_ANY_DOMAIN,
+  TempMailInbox,
+  getTempMailConfiguredDomains,
+  normalizeTempMailDomainSelection,
+  resolveTempMailCreateDomain
+} from "../shared/types/tempMail";
 
 type Feedback = {
   type: "success" | "error" | "info";
@@ -38,8 +44,8 @@ type CopyHint = {
 
 type MessageViewMode = "html" | "text";
 
-function getMailboxPrefix(address: string) {
-  return address.split("@")[0] || "";
+function getEffectiveAutoRefreshIntervalMs(intervalMs: number) {
+  return Math.max(intervalMs, 1);
 }
 
 function getFeedbackBadge(type: Feedback["type"]) {
@@ -210,7 +216,6 @@ export function PopupApp() {
   const [expandedMessageId, setExpandedMessageId] = useState<string | null>(null);
   const [messageViewModes, setMessageViewModes] = useState<Record<string, MessageViewMode>>({});
   const [mailboxInputValue, setMailboxInputValue] = useState("");
-  const [showCustomMailboxForm, setShowCustomMailboxForm] = useState(false);
   const [loading, setLoading] = useState(true);
   const [theme, setTheme] = useState<PopupTheme>("dark");
 
@@ -321,39 +326,18 @@ export function PopupApp() {
   const tempMailHistoryOptions = isTempMailMode
     ? selectedProfile?.tempMailInboxes || (selectedProfile?.inbox ? [selectedProfile.inbox] : [])
     : [];
-  const tempMailDomain = selectedProfile?.tempMail.domain || currentMailboxAddress.split("@")[1] || "";
-  const canCustomizeTempMailPrefix = Boolean(selectedProfile?.tempMail.adminAuth.trim());
+  const tempMailDomains = selectedProfile ? getTempMailConfiguredDomains(selectedProfile.tempMail) : [];
+  const selectedTempMailDomainValue = selectedProfile
+    ? normalizeTempMailDomainSelection(selectedProfile.tempMail.domain, tempMailDomains)
+    : "";
   const tempMailHistorySelectValue = selectedProfile?.inbox?.addressJwt || selectedProfile?.inbox?.address || "";
   const normalizedCustomMailboxInput = mailboxInputValue.trim().toLowerCase();
-  const matchedCustomInbox = useMemo(() => {
-    if (!normalizedCustomMailboxInput || !tempMailHistoryOptions.length) {
-      return null;
-    }
-
-    const normalizedInputAddress = tempMailDomain
-      ? `${normalizedCustomMailboxInput}@${tempMailDomain}`.toLowerCase()
-      : normalizedCustomMailboxInput;
-
-    return (
-      tempMailHistoryOptions.find((item) => {
-        const itemAddress = item.address.trim().toLowerCase();
-        const itemPrefix = getMailboxPrefix(item.address).trim().toLowerCase();
-
-        return (
-          itemPrefix === normalizedCustomMailboxInput ||
-          itemAddress === normalizedCustomMailboxInput ||
-          itemAddress === normalizedInputAddress
-        );
-      }) || null
-    );
-  }, [normalizedCustomMailboxInput, tempMailDomain, tempMailHistoryOptions]);
 
   useEffect(() => {
     if (!selectedProfile) {
       setExpandedMessageId(null);
       setMessageViewModes({});
       setMailboxInputValue("");
-      setShowCustomMailboxForm(false);
       return;
     }
 
@@ -370,7 +354,6 @@ export function PopupApp() {
       )
     );
     setMailboxInputValue("");
-    setShowCustomMailboxForm(false);
   }, [selectedProfile]);
 
   function getMessageViewMode(messageId: string, hasHtmlContent: boolean): MessageViewMode {
@@ -393,6 +376,77 @@ export function PopupApp() {
     setSelectedProfileId(nextSelectedId);
     await saveProfiles(nextProfiles);
     await saveActiveProfileId(nextSelectedId);
+  }
+
+  async function refreshProfileInbox(
+    profile: DuckProfile,
+    nextSelectedId: string,
+    options?: { silent?: boolean }
+  ) {
+    if (!profile.inbox?.address.trim()) {
+      if (!options?.silent) {
+        setFeedback({ type: "error", message: "请先创建或填写收件箱信息。" });
+      }
+      return;
+    }
+
+    if (busyAction !== null) {
+      return;
+    }
+
+    setBusyAction("refresh");
+
+    try {
+      const { messages, totalCount } = await fetchCurrentInboxMessageSummaryPage(profile, {
+        limit: 20,
+        offset: 0
+      });
+
+      const nextProfiles = profiles.map((item) =>
+        item.id === profile.id
+          ? syncCurrentTempMailInboxState(profile, (state) => ({
+              ...state,
+              inbox: profile.inbox!,
+              messages,
+              messageTotal: totalCount ?? messages.length,
+              readMessageIds: Array.from(new Set(state.readMessageIds)),
+              lastSyncedAt: new Date().toISOString()
+            }))
+          : item
+      );
+
+      await persistProfiles(nextProfiles, nextSelectedId);
+      setExpandedMessageId(null);
+
+      if (!options?.silent) {
+        setFeedback({
+          type: "success",
+          message: messages.length ? `已同步 ${messages.length} 封邮件` : "当前没有邮件"
+        });
+      }
+    } catch (error) {
+      if (!options?.silent) {
+        setFeedback({
+          type: "error",
+          message: error instanceof Error ? error.message : "刷新邮件失败。"
+        });
+      } else {
+        console.warn("Popup auto refresh failed.", error);
+      }
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function handleSelectProfile(nextProfileId: string) {
+    setSelectedProfileId(nextProfileId);
+    setExpandedMessageId(null);
+    await saveActiveProfileId(nextProfileId);
+
+    const nextProfile = profiles.find((profile) => profile.id === nextProfileId);
+    if (nextProfile?.inbox?.address.trim()) {
+      await refreshProfileInbox(nextProfile, nextProfileId, { silent: true });
+    }
   }
 
   async function handleGenerateAlias() {
@@ -440,13 +494,10 @@ export function PopupApp() {
       return;
     }
 
-    if (!selectedProfile.tempMail.baseUrl.trim() || !selectedProfile.tempMail.domain.trim()) {
-      setFeedback({ type: "error", message: "请先在设置页填写 Temp Mail Base URL 和 Domain。" });
-      return;
-    }
+    const createDomain = resolveTempMailCreateDomain(selectedProfile.tempMail);
 
-    if (!selectedProfile.tempMail.adminAuth.trim()) {
-      setFeedback({ type: "error", message: "请先在设置页填写 Temp Mail Admin Auth。" });
+    if (!selectedProfile.tempMail.baseUrl.trim() || !createDomain) {
+      setFeedback({ type: "error", message: "请先在设置页填写 Temp Mail Base URL，并至少配置一个域名。" });
       return;
     }
 
@@ -454,7 +505,10 @@ export function PopupApp() {
 
     try {
       const inbox = await createTempMailInbox(
-        selectedProfile.tempMail,
+        {
+          ...selectedProfile.tempMail,
+          domain: createDomain
+        },
         customPrefix?.trim() || undefined
       );
       const nextProfiles = profiles.map((profile) =>
@@ -472,7 +526,6 @@ export function PopupApp() {
       await persistProfiles(nextProfiles, selectedProfile.id);
       setExpandedMessageId(null);
       setMailboxInputValue("");
-      setShowCustomMailboxForm(false);
       setFeedback({
         type: "success",
         message: `${customPrefix?.trim() ? "已创建" : "已随机生成"} ${inbox.address}，请刷新同步这个邮箱的邮件`
@@ -515,7 +568,14 @@ export function PopupApp() {
     await persistProfiles(nextProfiles, selectedProfile.id);
     setExpandedMessageId(null);
     setMailboxInputValue("");
-    setShowCustomMailboxForm(false);
+    await refreshProfileInbox(
+      {
+        ...selectedProfile,
+        inbox: nextInbox
+      },
+      selectedProfile.id,
+      { silent: true }
+    );
     setFeedback({ type: "info", message: `已切换到 ${nextInbox.address}` });
   }
 
@@ -528,77 +588,106 @@ export function PopupApp() {
       return;
     }
 
-    if (!canCustomizeTempMailPrefix) {
-      setFeedback({ type: "error", message: "没有配置 Admin token 时，不能自定义前缀。" });
-      return;
-    }
-
     if (!normalizedCustomMailboxInput) {
-      setFeedback({ type: "error", message: "请输入要创建的邮箱前缀。" });
-      return;
-    }
-
-    if (matchedCustomInbox) {
-      await handleSelectTempMailInbox(matchedCustomInbox.addressJwt || matchedCustomInbox.address);
+      setFeedback({ type: "error", message: "请输入固定邮箱前缀。" });
       return;
     }
 
     await handleCreateInbox(normalizedCustomMailboxInput);
   }
 
-  async function handleRefreshMessages() {
-    if (!selectedProfile) {
-      setFeedback({ type: "error", message: "请先在设置页添加 Duck。" });
+  async function handleChangeTempMailDomain(nextDomain: string) {
+    if (!selectedProfile || !isTempMailMode) {
       return;
     }
 
-    if (!selectedProfile.inbox?.addressJwt.trim()) {
-      setFeedback({ type: "error", message: "请先在设置页填写 Temp Mail token。" });
-      return;
-    }
+    const nextProfiles = profiles.map((profile) =>
+      profile.id === selectedProfile.id
+        ? {
+            ...profile,
+            tempMail: {
+              ...profile.tempMail,
+              domain: normalizeTempMailDomainSelection(
+                nextDomain,
+                getTempMailConfiguredDomains(profile.tempMail)
+              )
+            },
+            updatedAt: new Date().toISOString()
+          }
+        : profile
+    );
 
-    setBusyAction("refresh");
-
-    try {
-      const { messages, totalCount } = await fetchTempMailMessageSummaryPage(
-        {
-          ...selectedProfile.tempMail,
-          ...selectedProfile.inbox
-        },
-        {
-          limit: 20,
-          offset: 0
-        }
-      );
-
-      const nextProfiles = profiles.map((profile) =>
-        profile.id === selectedProfile.id
-          ? syncCurrentTempMailInboxState(profile, (state) => ({
-              ...state,
-              inbox: selectedProfile.inbox!,
-              messages,
-              messageTotal: totalCount ?? messages.length,
-              readMessageIds: Array.from(new Set(state.readMessageIds)),
-              lastSyncedAt: new Date().toISOString()
-            }))
-          : profile
-      );
-
-      await persistProfiles(nextProfiles, selectedProfile.id);
-      setExpandedMessageId(null);
-      setFeedback({
-        type: "success",
-        message: messages.length ? `已同步 ${messages.length} 封邮件` : "当前没有邮件"
-      });
-    } catch (error) {
-      setFeedback({
-        type: "error",
-        message: error instanceof Error ? error.message : "刷新邮件失败。"
-      });
-    } finally {
-      setBusyAction(null);
-    }
+    await persistProfiles(nextProfiles, selectedProfile.id);
   }
+
+  async function handleToggleAutoRefresh() {
+    if (!selectedProfile) {
+      return;
+    }
+
+    const nextEnabled = !selectedProfile.tempMail.autoRefreshEnabled;
+    const nextProfiles = profiles.map((profile) =>
+      profile.id === selectedProfile.id
+        ? {
+            ...profile,
+            tempMail: {
+              ...profile.tempMail,
+              autoRefreshEnabled: nextEnabled
+            },
+            updatedAt: new Date().toISOString()
+          }
+        : profile
+    );
+
+    await persistProfiles(nextProfiles, selectedProfile.id);
+    const effectiveIntervalMs = getEffectiveAutoRefreshIntervalMs(selectedProfile.tempMail.pollIntervalMs);
+    setFeedback({
+      type: "info",
+      message: nextEnabled
+        ? `已开启自动刷新，当前按 ${effectiveIntervalMs}ms 刷新当前邮箱`
+        : "已关闭自动刷新"
+    });
+  }
+
+  async function refreshCurrentInbox(options?: { silent?: boolean }) {
+    if (!selectedProfile) {
+      if (!options?.silent) {
+        setFeedback({ type: "error", message: "请先在设置页添加 Duck。" });
+      }
+      return;
+    }
+
+    await refreshProfileInbox(selectedProfile, selectedProfile.id, options);
+  }
+
+  async function handleRefreshMessages() {
+    await refreshCurrentInbox();
+  }
+
+  useEffect(() => {
+    if (
+      !selectedProfile?.tempMail.autoRefreshEnabled ||
+      !selectedProfile.inbox?.address.trim()
+    ) {
+      return;
+    }
+
+    const intervalMs = getEffectiveAutoRefreshIntervalMs(selectedProfile.tempMail.pollIntervalMs);
+    const timer = window.setInterval(() => {
+      void refreshCurrentInbox({ silent: true });
+    }, intervalMs);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [
+    busyAction,
+    selectedProfile?.id,
+    selectedProfile?.inbox?.address,
+    selectedProfile?.inbox?.addressJwt,
+    selectedProfile?.tempMail.autoRefreshEnabled,
+    selectedProfile?.tempMail.pollIntervalMs
+  ]);
 
   async function handleCopyEmail(event: ReactMouseEvent<HTMLButtonElement>) {
     if (!currentMailboxAddress) {
@@ -744,63 +833,53 @@ export function PopupApp() {
       ) : null}
 
       <section className="popup-panel">
-        <div
-          className={`popup-control-grid ${
-            isTempMailMode && canCustomizeTempMailPrefix ? "is-tempmail" : ""
-          }`}
-        >
-          <div className="popup-select-shell">
-            <select
-              value={selectedProfile.id}
-              onChange={(event) => {
-                const nextProfileId = event.target.value;
-                setSelectedProfileId(nextProfileId);
-                setExpandedMessageId(null);
-                void saveActiveProfileId(event.target.value);
-              }}
-            >
-              {profiles.map((profile) => (
-                <option key={profile.id} value={profile.id}>
-                  {profile.name}
-                </option>
-              ))}
-            </select>
+        <div className="popup-workspace">
+          <div className="popup-toolbar-row">
+            <div className="popup-select-shell popup-profile-select">
+              <select
+                value={selectedProfile.id}
+                onChange={(event) => {
+                  void handleSelectProfile(event.target.value);
+                }}
+              >
+                {profiles.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {profile.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="popup-action-cluster">
+              <button
+                className="popup-mini-button primary"
+                disabled={busyAction !== null}
+                onClick={() => void (isTempMailMode ? handleCreateInbox() : handleGenerateAlias())}
+                title={isTempMailMode ? "随机生成收件箱" : "生成邮箱"}
+              >
+                +
+              </button>
+              <button
+                className="popup-mini-button"
+                disabled={busyAction !== null}
+                onClick={() => void handleRefreshMessages()}
+                title="刷新邮件"
+              >
+                ↻
+              </button>
+              <button
+                className={`popup-mini-button ${selectedProfile.tempMail.autoRefreshEnabled ? "is-active" : "is-inactive"}`}
+                disabled={busyAction !== null}
+                onClick={() => void handleToggleAutoRefresh()}
+                title={selectedProfile.tempMail.autoRefreshEnabled ? "关闭自动刷新" : "开启自动刷新"}
+                aria-pressed={selectedProfile.tempMail.autoRefreshEnabled}
+              >
+                {selectedProfile.tempMail.autoRefreshEnabled ? "◉" : "◌"}
+              </button>
+            </div>
           </div>
-          <button
-            className="popup-mini-button primary"
-            disabled={busyAction !== null}
-            onClick={() => void (isTempMailMode ? handleCreateInbox() : handleGenerateAlias())}
-            title={isTempMailMode ? "随机生成收件箱" : "生成邮箱"}
-          >
-            +
-          </button>
-          {isTempMailMode && canCustomizeTempMailPrefix ? (
-            <button
-              type="button"
-              className={`popup-mini-button popup-mini-button-wide ${showCustomMailboxForm ? "is-active" : ""}`}
-              disabled={busyAction !== null}
-              onClick={() => {
-                setShowCustomMailboxForm((current) => !current);
-                setMailboxInputValue("");
-              }}
-              title="自定义前缀"
-            >
-              自定义
-            </button>
-          ) : null}
-          <button
-            className="popup-mini-button"
-            disabled={busyAction !== null}
-            onClick={() => void handleRefreshMessages()}
-            title="刷新邮件"
-          >
-            ↻
-          </button>
-        </div>
 
-        {isTempMailMode ? (
-          <div className="popup-tempmail-tools">
-            {showCustomMailboxForm && canCustomizeTempMailPrefix ? (
+          {isTempMailMode ? (
+            <div className="popup-tempmail-tools">
               <div className="popup-tempmail-custom-row">
                 <div className="popup-mailbox-combobox">
                   <input
@@ -813,44 +892,63 @@ export function PopupApp() {
                         void handleCustomCreateInbox();
                       }
                     }}
-                    placeholder="输入固定前缀"
+                    placeholder="输入邮箱前缀"
                   />
-                  <span className="popup-mailbox-combobox-suffix">
-                    {tempMailDomain ? `@${tempMailDomain}` : "@domain"}
-                  </span>
+                </div>
+                <div className="popup-select-shell">
+                  <select
+                    value={
+                      selectedTempMailDomainValue ||
+                      (tempMailDomains.length ? tempMailDomains[0] : "")
+                    }
+                    onChange={(event) => void handleChangeTempMailDomain(event.target.value)}
+                  >
+                    {tempMailDomains.length ? (
+                      <>
+                        {tempMailDomains.map((domain) => (
+                          <option key={domain} value={domain}>
+                            {domain}
+                          </option>
+                        ))}
+                        <option value={TEMP_MAIL_ANY_DOMAIN}>任意（随机域名）</option>
+                      </>
+                    ) : (
+                      <option value="">请先配置域名</option>
+                    )}
+                  </select>
                 </div>
                 <button
                   type="button"
                   className="popup-mini-button popup-mini-button-wide"
                   disabled={busyAction !== null}
                   onClick={() => void handleCustomCreateInbox()}
-                  title="创建自定义邮箱"
+                  title="创建固定格式邮箱"
                 >
                   创建
                 </button>
               </div>
-            ) : null}
-            <div className="popup-select-shell">
-              <select
-                value={tempMailHistorySelectValue}
-                onChange={(event) => void handleSelectTempMailInbox(event.target.value)}
-              >
-                {tempMailHistoryOptions.length ? (
-                  tempMailHistoryOptions.map((inbox) => (
-                    <option key={inbox.addressJwt || inbox.address} value={inbox.addressJwt || inbox.address}>
-                      {inbox.address}
-                    </option>
-                  ))
-                ) : (
-                  <option value="">还没有历史邮箱</option>
-                )}
-              </select>
+
+              <div className="popup-tempmail-history-row">
+                <div className="popup-select-shell">
+                  <select
+                    value={tempMailHistorySelectValue}
+                    onChange={(event) => void handleSelectTempMailInbox(event.target.value)}
+                  >
+                    {tempMailHistoryOptions.length ? (
+                      tempMailHistoryOptions.map((inbox) => (
+                        <option key={inbox.addressJwt || inbox.address} value={inbox.addressJwt || inbox.address}>
+                          {inbox.address}
+                        </option>
+                      ))
+                    ) : (
+                      <option value="">还没有历史邮箱</option>
+                    )}
+                  </select>
+                </div>
+              </div>
             </div>
-            {!canCustomizeTempMailPrefix ? (
-              <div className="popup-inline-hint">未配置 Admin token 时，只能切换历史邮箱，不能新建固定前缀。</div>
-            ) : null}
-          </div>
-        ) : null}
+          ) : null}
+        </div>
 
         {!isTempMailMode ? (
           <div className="popup-mailbox-strip">
@@ -891,11 +989,16 @@ export function PopupApp() {
                 {currentMailboxAddress ? <span className="popup-tempmail-copy-action">复制</span> : null}
               </button>
             </div>
-            <span>
-              {selectedProfile.lastSyncedAt
-                ? formatAbsoluteDateTime(selectedProfile.lastSyncedAt)
-                : "未同步"}
-            </span>
+            {selectedProfile.lastSyncedAt ? (
+              <span className="popup-tempmail-meta-time">
+                <span>{formatListDateTime(selectedProfile.lastSyncedAt).date}</span>
+                <span>{formatListDateTime(selectedProfile.lastSyncedAt).time}</span>
+              </span>
+            ) : (
+              <span className="popup-tempmail-meta-time">
+                <span>未同步</span>
+              </span>
+            )}
           </div>
         )}
       </section>

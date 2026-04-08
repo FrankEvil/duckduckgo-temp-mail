@@ -12,6 +12,8 @@ export const DEFAULT_TEMP_MAIL_CONFIG: TempMailConfig = {
   adminAuth: "",
   customAuth: "",
   domain: "",
+  domains: [],
+  autoRefreshEnabled: false,
   enablePrefix: true,
   namePrefix: "duckrelay-",
   pollIntervalMs: 5000,

@@ -58,29 +58,52 @@ function decodeJwtPayload(token: string) {
 }
 
 function buildAdminHeaders(config: TempMailConfig) {
-  const headers: Record<string, string> = {
+  return {
     "x-admin-auth": config.adminAuth,
     "Content-Type": "application/json"
   };
+}
 
-  if (config.customAuth) {
-    headers["x-custom-auth"] = config.customAuth;
+function buildUserTokenHeaders(config: TempMailConfig) {
+  return {
+    "x-user-token": config.customAuth,
+    "Content-Type": "application/json"
+  };
+}
+
+function buildCreateHeaders(config: TempMailConfig) {
+  if (config.adminAuth.trim()) {
+    return buildAdminHeaders(config);
   }
 
-  return headers;
+  if (config.customAuth.trim()) {
+    return buildUserTokenHeaders(config);
+  }
+
+  return {
+    "Content-Type": "application/json"
+  };
 }
 
 function buildAddressHeaders(session: TempMailMailboxSession) {
-  const headers: Record<string, string> = {
+  return {
     Authorization: `Bearer ${session.addressJwt}`,
     "Content-Type": "application/json"
   };
+}
 
-  if (session.customAuth) {
-    headers["x-custom-auth"] = session.customAuth;
+function buildMailQueryParams(query: TempMailMessageQuery = {}, fallbackAddress?: string) {
+  const params = new URLSearchParams({
+    limit: String(query.limit ?? 20),
+    offset: String(query.offset ?? 0)
+  });
+
+  const address = String(query.address || fallbackAddress || "").trim();
+  if (address) {
+    params.set("address", address);
   }
 
-  return headers;
+  return params;
 }
 
 function extractHeader(raw: string | undefined, headerName: string) {
@@ -493,11 +516,48 @@ function cleanMailText(value: string) {
     .trim();
 }
 
+function hashStableString(value: string) {
+  let hash = 0;
+
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+
+  return hash.toString(36);
+}
+
 function toMessageId(message: TempMailMessage, fallbackIndex: number) {
   const value = message.id;
 
   if (typeof value === "string" || typeof value === "number") {
     return String(value);
+  }
+
+  const raw = typeof message.raw === "string" ? message.raw : "";
+  const messageHeaderId =
+    extractHeader(raw, "Message-ID") ||
+    extractHeader(raw, "Message-Id") ||
+    extractHeader(raw, "X-Message-ID");
+
+  if (messageHeaderId) {
+    return `mail-${hashStableString(messageHeaderId)}`;
+  }
+
+  const stableFingerprint = [
+    message.address,
+    message.to,
+    message.from,
+    message.subject,
+    message.createdAt,
+    message.receivedAt,
+    raw
+  ]
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .join("|");
+
+  if (stableFingerprint) {
+    return `mail-${hashStableString(stableFingerprint)}`;
   }
 
   return `mail-${fallbackIndex}`;
@@ -737,7 +797,7 @@ export async function createTempMailInbox(
   const name = customName || buildRandomMailboxName(config.namePrefix);
   const response = await fetch(joinUrl(config.baseUrl, "/admin/new_address"), {
     method: "POST",
-    headers: buildAdminHeaders(config),
+    headers: buildCreateHeaders(config),
     body: JSON.stringify({
       enablePrefix: config.enablePrefix,
       name,
@@ -773,10 +833,7 @@ export async function fetchTempMailMessagePage(
   session: TempMailMailboxSession,
   query: TempMailMessageQuery = {}
 ): Promise<TempMailMessagePage> {
-  const params = new URLSearchParams({
-    limit: String(query.limit ?? 20),
-    offset: String(query.offset ?? 0)
-  });
+  const params = buildMailQueryParams(query);
 
   const response = await fetch(
     `${joinUrl(session.baseUrl, "/api/mails")}?${params.toString()}`,
@@ -805,10 +862,7 @@ export async function fetchTempMailAdminMessagePage(
   config: TempMailConfig,
   query: TempMailMessageQuery = {}
 ): Promise<TempMailMessagePage> {
-  const params = new URLSearchParams({
-    limit: String(query.limit ?? 20),
-    offset: String(query.offset ?? 0)
-  });
+  const params = buildMailQueryParams(query);
 
   const response = await fetch(
     `${joinUrl(config.baseUrl, "/admin/mails")}?${params.toString()}`,
@@ -820,6 +874,35 @@ export async function fetchTempMailAdminMessagePage(
 
   if (!response.ok) {
     throw new Error(`Temp Mail admin message fetch failed: ${response.status}`);
+  }
+
+  const data = (await response.json()) as
+    | TempMailMessage[]
+    | TempMailMessageListResponse
+    | Record<string, unknown>;
+
+  return {
+    messages: findMailArray(data),
+    totalCount: extractTotalCount(data)
+  };
+}
+
+export async function fetchTempMailUserTokenMessagePage(
+  config: TempMailConfig,
+  query: TempMailMessageQuery = {}
+): Promise<TempMailMessagePage> {
+  const params = buildMailQueryParams(query);
+
+  const response = await fetch(
+    `${joinUrl(config.baseUrl, "/user_api/mails")}?${params.toString()}`,
+    {
+      method: "GET",
+      headers: buildUserTokenHeaders(config)
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Temp Mail user token message fetch failed: ${response.status}`);
   }
 
   const data = (await response.json()) as
@@ -861,6 +944,21 @@ export async function fetchTempMailAdminMessageSummaryPage(
   query: TempMailMessageQuery = {}
 ): Promise<{ messages: TempMailMessageSummary[]; totalCount: number | null }> {
   const result = await fetchTempMailAdminMessagePage(config, query);
+
+  return {
+    messages: result.messages.map((message, index) =>
+      summarizeTempMailMessage(message, address, index)
+    ),
+    totalCount: result.totalCount
+  };
+}
+
+export async function fetchTempMailUserTokenMessageSummaryPage(
+  config: TempMailConfig,
+  address: string,
+  query: TempMailMessageQuery = {}
+): Promise<{ messages: TempMailMessageSummary[]; totalCount: number | null }> {
+  const result = await fetchTempMailUserTokenMessagePage(config, query);
 
   return {
     messages: result.messages.map((message, index) =>

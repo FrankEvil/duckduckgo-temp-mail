@@ -4,8 +4,9 @@ import { createDuckAlias } from "../features/ddg/client";
 import {
   createTempMailInbox,
   fetchTempMailAdminMessageSummaryPage,
-  fetchTempMailMessageSummaryPage
+  fetchTempMailUserTokenMessageSummaryPage
 } from "../features/temp-mail/client";
+import { fetchCurrentInboxMessageSummaryPage } from "../features/temp-mail/inboxSync";
 import {
   EmailHtmlFrame,
   extractMailbox,
@@ -24,7 +25,14 @@ import {
 import { DuckAlias } from "../shared/types/duck";
 import { MailSummary } from "../shared/types/mail";
 import { DuckProfile, ProfileMode, TempMailInboxState } from "../shared/types/profile";
-import { TempMailInbox } from "../shared/types/tempMail";
+import {
+  TEMP_MAIL_ANY_DOMAIN,
+  TempMailInbox,
+  getTempMailConfiguredDomains,
+  normalizeTempMailDomainSelection,
+  parseTempMailDomains,
+  resolveTempMailCreateDomain
+} from "../shared/types/tempMail";
 
 type Notice = {
   type: "success" | "error" | "info";
@@ -384,13 +392,25 @@ function patchDuckProfileTempMailFromInbox(profile: DuckProfile) {
   const address = profile.inbox?.address || "";
   const inferredDomain = extractInboxDomain(address);
   const inferredBaseUrl = inferTempMailBaseUrl(address, profile.tempMail.baseUrl);
+  const inferredDomains = getTempMailConfiguredDomains(profile.tempMail);
+  const nextDomains =
+    inferredDomains.length > 0
+      ? inferredDomains
+      : inferredDomain
+        ? [inferredDomain]
+        : [];
 
   return {
     ...profile,
     tempMail: {
       ...profile.tempMail,
       baseUrl: inferredBaseUrl,
-      domain: profile.tempMail.domain.trim() || inferredDomain
+      domains: nextDomains,
+      domain: normalizeTempMailDomainSelection(
+        profile.tempMail.domain,
+        nextDomains,
+        inferredDomain
+      )
     }
   };
 }
@@ -413,6 +433,20 @@ function mergeMailSummaries(currentMessages: MailSummary[], incomingMessages: Ma
 
 function mergeReadMessageIds(currentReadMessageIds: string[], incomingReadMessageIds: string[] = []) {
   return Array.from(new Set([...currentReadMessageIds, ...incomingReadMessageIds]));
+}
+
+async function fetchTempMailAllMailboxSummaryPage(profile: DuckProfile, offset = 0) {
+  if (profile.tempMail.adminAuth.trim()) {
+    return fetchTempMailAdminMessageSummaryPage(profile.tempMail, "", {
+      limit: MESSAGE_PAGE_SIZE,
+      offset
+    });
+  }
+
+  return fetchTempMailUserTokenMessageSummaryPage(profile.tempMail, "", {
+    limit: MESSAGE_PAGE_SIZE,
+    offset
+  });
 }
 
 function getHasMoreMessages(totalCount: number, loadedCount: number, lastPageCount: number) {
@@ -738,9 +772,14 @@ export function OptionsApp() {
     () => (selectedProfile ? getTempMailHistoryOptions(selectedProfile) : []),
     [selectedProfile]
   );
-  const canViewAllTempMailHistory = Boolean(
-    selectedProfile?.mode === "tempmail" && selectedProfile.tempMail.adminAuth.trim()
+  const canViewAllTempMailHistory = Boolean(selectedProfile?.mode === "tempmail");
+  const selectedTempMailDomains = useMemo(
+    () => (selectedProfile ? getTempMailConfiguredDomains(selectedProfile.tempMail) : []),
+    [selectedProfile]
   );
+  const selectedTempMailDomainValue = selectedProfile
+    ? normalizeTempMailDomainSelection(selectedProfile.tempMail.domain, selectedTempMailDomains)
+    : "";
   const statusScopeData = useMemo(
     () => (selectedProfile ? getStatusMailScopeData(selectedProfile, tempMailStatusScope) : null),
     [selectedProfile, tempMailStatusScope]
@@ -868,10 +907,64 @@ export function OptionsApp() {
     await savePopupTheme(nextTheme);
   }
 
+  async function syncProfileCurrentInbox(profile: DuckProfile, nextSelectedId: string, silent = false) {
+    if (!profile.inbox?.address.trim()) {
+      return;
+    }
+
+    try {
+      const { messages, totalCount } = await fetchCurrentInboxMessageSummaryPage(profile, {
+        limit: MESSAGE_PAGE_SIZE,
+        offset: 0
+      });
+
+      const nextProfiles = profiles.map((item) =>
+        item.id === profile.id
+          ? syncCurrentTempMailInboxState(
+              profile,
+              (state) => ({
+                ...state,
+                inbox: profile.inbox!,
+                messages,
+                messageTotal: totalCount ?? messages.length,
+                readMessageIds: mergeReadMessageIds(state.readMessageIds),
+                lastSyncedAt: new Date().toISOString()
+              })
+            )
+          : item
+      );
+
+      await persistProfiles(nextProfiles, nextSelectedId);
+
+      if (!silent) {
+        const resolvedTotal = totalCount ?? messages.length;
+        setHasMoreStatusMessages(getHasMoreMessages(resolvedTotal, messages.length, messages.length));
+        setNotice({
+          type: "success",
+          message: messages.length
+            ? `已同步 ${messages.length} 封邮件，当前已加载 ${messages.length}${resolvedTotal > messages.length ? ` / ${resolvedTotal}` : ""}。`
+            : "当前没有同步到邮件。"
+        });
+      }
+    } catch (error) {
+      if (!silent) {
+        setNotice({
+          type: "error",
+          message: error instanceof Error ? error.message : "同步邮件失败。"
+        });
+      }
+    }
+  }
+
   async function handleSelectProfile(profileId: string) {
     setSelectedProfileId(profileId);
     setPanelView("edit");
     await saveActiveProfileId(profileId);
+
+    const nextProfile = profiles.find((profile) => profile.id === profileId);
+    if (nextProfile?.inbox?.address.trim()) {
+      await syncProfileCurrentInbox(nextProfile, profileId, true);
+    }
   }
 
   async function handleCreateProfile() {
@@ -936,8 +1029,8 @@ export function OptionsApp() {
       return;
     }
 
-    if (selectedProfile.mode === "tempmail" && !selectedProfile.tempMail.domain.trim()) {
-      setNotice({ type: "error", message: "请先填写 Temp Mail Domain。" });
+    if (selectedProfile.mode === "tempmail" && !getTempMailConfiguredDomains(selectedProfile.tempMail).length) {
+      setNotice({ type: "error", message: "请先至少填写一个 Temp Mail 域名。" });
       return;
     }
 
@@ -965,7 +1058,12 @@ export function OptionsApp() {
             baseUrl: normalizeUrl(normalizedProfile.tempMail.baseUrl),
             adminAuth: normalizedProfile.tempMail.adminAuth.trim(),
             customAuth: normalizedProfile.tempMail.customAuth.trim(),
-            domain: normalizedProfile.tempMail.domain.trim(),
+            domains: getTempMailConfiguredDomains(normalizedProfile.tempMail),
+            autoRefreshEnabled: Boolean(normalizedProfile.tempMail.autoRefreshEnabled),
+            domain: normalizeTempMailDomainSelection(
+              normalizedProfile.tempMail.domain,
+              getTempMailConfiguredDomains(normalizedProfile.tempMail)
+            ),
             namePrefix: normalizedProfile.tempMail.namePrefix.trim(),
             pollIntervalMs: parseNumber(
               String(normalizedProfile.tempMail.pollIntervalMs),
@@ -1035,20 +1133,20 @@ export function OptionsApp() {
       return;
     }
 
-    if (!selectedProfile.tempMail.baseUrl.trim() || !selectedProfile.tempMail.domain.trim()) {
-      setNotice({ type: "error", message: "请先填写 Temp Mail Base URL 和 Domain。" });
-      return;
-    }
+    const createDomain = resolveTempMailCreateDomain(selectedProfile.tempMail);
 
-    if (!selectedProfile.tempMail.adminAuth.trim()) {
-      setNotice({ type: "error", message: "创建收件箱前请先填写 Admin Auth。" });
+    if (!selectedProfile.tempMail.baseUrl.trim() || !createDomain) {
+      setNotice({ type: "error", message: "请先填写 Temp Mail Base URL，并至少配置一个域名。" });
       return;
     }
 
     setBusyAction("inbox");
 
     try {
-      const inbox = await createTempMailInbox(selectedProfile.tempMail);
+      const inbox = await createTempMailInbox({
+        ...selectedProfile.tempMail,
+        domain: createDomain
+      });
       const nextProfiles = profiles.map((profile) =>
         profile.id === selectedProfile.id
           ? applyTempMailInbox(profile, inbox)
@@ -1081,12 +1179,6 @@ export function OptionsApp() {
     await persistProfiles(nextProfiles, selectedProfile.id);
     setTempMailStatusScope("current");
 
-    // Auto-sync messages for the switched inbox
-    if (!inbox.addressJwt?.trim()) {
-      setNotice({ type: "info", message: `已切换到 ${inbox.address}。` });
-      return;
-    }
-
     const normalizedProfile = patchDuckProfileTempMailFromInbox(appliedProfile);
     if (!normalizedProfile.tempMail.baseUrl.trim()) {
       setNotice({ type: "info", message: `已切换到 ${inbox.address}。` });
@@ -1096,10 +1188,11 @@ export function OptionsApp() {
     setBusyAction("sync");
 
     try {
-      const { messages, totalCount } = await fetchTempMailMessageSummaryPage(
+      const { messages, totalCount } = await fetchCurrentInboxMessageSummaryPage(
         {
-          ...normalizedProfile.tempMail,
-          ...inbox
+          ...appliedProfile,
+          tempMail: normalizedProfile.tempMail,
+          inbox
         },
         {
           limit: MESSAGE_PAGE_SIZE,
@@ -1156,8 +1249,8 @@ export function OptionsApp() {
     }
 
     const inbox = normalizedProfile.inbox;
-    if (!inbox?.addressJwt.trim()) {
-      setNotice({ type: "error", message: "请先填写有效的 Temp Mail JWT。" });
+    if (!inbox?.address.trim()) {
+      setNotice({ type: "error", message: "请先创建或填写收件箱信息。" });
       return;
     }
 
@@ -1165,14 +1258,12 @@ export function OptionsApp() {
 
     try {
       if (selectedProfile.mode === "tempmail" && tempMailStatusScope === "all") {
-        const { messages, totalCount } = await fetchTempMailAdminMessageSummaryPage(
-          normalizedProfile.tempMail,
-          "",
-          {
-            limit: MESSAGE_PAGE_SIZE,
-            offset: 0
-          }
-        );
+        if (!normalizedProfile.tempMail.adminAuth.trim() && !normalizedProfile.tempMail.customAuth.trim()) {
+          setNotice({ type: "error", message: "未配置 Admin Auth 或 User Token，无法同步全部邮箱。" });
+          return;
+        }
+
+        const { messages, totalCount } = await fetchTempMailAllMailboxSummaryPage(normalizedProfile, 0);
 
         const existingStateMap = new Map(
           selectedProfile.tempMailInboxStates.map((state) => [state.inbox.address, state])
@@ -1271,10 +1362,10 @@ export function OptionsApp() {
         return;
       }
 
-      const { messages, totalCount } = await fetchTempMailMessageSummaryPage(
+      const { messages, totalCount } = await fetchCurrentInboxMessageSummaryPage(
         {
-          ...normalizedProfile.tempMail,
-          ...inbox
+          ...normalizedProfile,
+          inbox
         },
         {
           limit: MESSAGE_PAGE_SIZE,
@@ -1329,20 +1420,16 @@ export function OptionsApp() {
 
     // Admin "all" scope load more
     if (selectedProfile.mode === "tempmail" && tempMailStatusScope === "all") {
-      if (!normalizedProfile.tempMail.adminAuth.trim()) {
+      if (!normalizedProfile.tempMail.adminAuth.trim() && !normalizedProfile.tempMail.customAuth.trim()) {
         return;
       }
 
       setLoadingMoreMessages(true);
 
       try {
-        const { messages: nextPageMessages, totalCount } = await fetchTempMailAdminMessageSummaryPage(
-          normalizedProfile.tempMail,
-          "",
-          {
-            limit: MESSAGE_PAGE_SIZE,
-            offset: adminLoadedCount
-          }
+        const { messages: nextPageMessages, totalCount } = await fetchTempMailAllMailboxSummaryPage(
+          normalizedProfile,
+          adminLoadedCount
         );
 
         const existingStateMap = new Map(
@@ -1439,22 +1526,22 @@ export function OptionsApp() {
     }
 
     // Current inbox load more
-    if (!selectedProfile.inbox?.addressJwt.trim()) {
+    if (!selectedProfile.inbox?.address.trim()) {
       return;
     }
 
     const inbox = normalizedProfile.inbox;
-    if (!inbox?.addressJwt.trim()) {
+    if (!inbox?.address.trim()) {
       return;
     }
 
     setLoadingMoreMessages(true);
 
     try {
-      const { messages: nextPageMessages, totalCount } = await fetchTempMailMessageSummaryPage(
+      const { messages: nextPageMessages, totalCount } = await fetchCurrentInboxMessageSummaryPage(
         {
-          ...normalizedProfile.tempMail,
-          ...inbox
+          ...normalizedProfile,
+          inbox
         },
         {
           limit: MESSAGE_PAGE_SIZE,
@@ -1674,7 +1761,7 @@ export function OptionsApp() {
                   >
                     <strong>2. Temp Mail 直连</strong>
                     <p>直接按 Temp Mail 协议配置，点击创建收件箱后自动拿到地址和 JWT。</p>
-                    <span>Base URL + Admin Auth + Domain</span>
+                    <span>Base URL + Admin Auth/User Token + Domain</span>
                   </button>
                 </div>
               </section>
@@ -1786,6 +1873,48 @@ export function OptionsApp() {
                         placeholder="eyJhbGciOi..."
                       />
                     </label>
+
+                    <label className="mode-field span-4">
+                      <span>自动刷新</span>
+                      <select
+                        className="mode-input"
+                        value={selectedProfile.tempMail.autoRefreshEnabled ? "on" : "off"}
+                        onChange={(event) =>
+                          updateSelectedProfile((profile) => ({
+                            ...profile,
+                            tempMail: {
+                              ...profile.tempMail,
+                              autoRefreshEnabled: event.target.value === "on"
+                            }
+                          }))
+                        }
+                      >
+                        <option value="off">关闭</option>
+                        <option value="on">开启</option>
+                      </select>
+                    </label>
+                    <label className="mode-field span-4">
+                      <span>刷新间隔</span>
+                      <input
+                        className="mode-input"
+                        type="number"
+                        min={1}
+                        value={selectedProfile.tempMail.pollIntervalMs}
+                        onChange={(event) =>
+                          updateSelectedProfile((profile) => ({
+                            ...profile,
+                            tempMail: {
+                              ...profile.tempMail,
+                              pollIntervalMs: parseNumber(
+                                event.target.value,
+                                profile.tempMail.pollIntervalMs
+                              )
+                            }
+                          }))
+                        }
+                        placeholder="单位 ms"
+                      />
+                    </label>
                   </div>
                 </section>
               ) : (
@@ -1830,19 +1959,61 @@ export function OptionsApp() {
                       />
                     </label>
                     <label className="mode-field span-4">
-                      <span>Domain</span>
-                      <input
+                      <span>创建域名</span>
+                      <select
                         className="mode-input"
-                        value={selectedProfile.tempMail.domain}
+                        value={
+                          selectedTempMailDomainValue ||
+                          (selectedTempMailDomains.length ? selectedTempMailDomains[0] : "")
+                        }
                         onChange={(event) =>
                           updateSelectedProfile((profile) => ({
                             ...profile,
                             tempMail: {
                               ...profile.tempMail,
-                              domain: event.target.value
+                              domain: normalizeTempMailDomainSelection(
+                                event.target.value,
+                                getTempMailConfiguredDomains(profile.tempMail)
+                              )
                             }
                           }))
                         }
+                      >
+                        {selectedTempMailDomains.length ? (
+                          selectedTempMailDomains.map((domain) => (
+                            <option key={domain} value={domain}>
+                              {domain}
+                            </option>
+                          ))
+                        ) : (
+                          <option value="">请先填写域名列表</option>
+                        )}
+                        {selectedTempMailDomains.length ? (
+                          <option value={TEMP_MAIL_ANY_DOMAIN}>任意（随机选择）</option>
+                        ) : null}
+                      </select>
+                    </label>
+
+                    <label className="mode-field span-12">
+                      <span>Domain 列表</span>
+                      <textarea
+                        className="mode-input mode-textarea"
+                        value={selectedTempMailDomains.join("\n")}
+                        onChange={(event) =>
+                          updateSelectedProfile((profile) => {
+                            const domains = parseTempMailDomains(event.target.value);
+
+                            return {
+                              ...profile,
+                              tempMail: {
+                                ...profile.tempMail,
+                                domains,
+                                domain: normalizeTempMailDomainSelection(profile.tempMail.domain, domains)
+                              }
+                            };
+                          })
+                        }
+                        placeholder={"一行一个域名\nmail1.example.com\nmail2.example.com"}
                       />
                     </label>
 
@@ -1879,6 +2050,25 @@ export function OptionsApp() {
                       />
                     </label>
 
+                    <label className="mode-field span-4">
+                      <span>自动刷新</span>
+                      <select
+                        className="mode-input"
+                        value={selectedProfile.tempMail.autoRefreshEnabled ? "on" : "off"}
+                        onChange={(event) =>
+                          updateSelectedProfile((profile) => ({
+                            ...profile,
+                            tempMail: {
+                              ...profile.tempMail,
+                              autoRefreshEnabled: event.target.value === "on"
+                            }
+                          }))
+                        }
+                      >
+                        <option value="off">关闭</option>
+                        <option value="on">开启</option>
+                      </select>
+                    </label>
                     <label className="mode-field span-4">
                       <span>轮询间隔</span>
                       <input
@@ -1920,7 +2110,7 @@ export function OptionsApp() {
                       />
                     </label>
                     <label className="mode-field span-4">
-                      <span>Custom Auth</span>
+                      <span>User Token</span>
                       <input
                         className="mode-input"
                         value={selectedProfile.tempMail.customAuth}
@@ -1933,7 +2123,7 @@ export function OptionsApp() {
                             }
                           }))
                         }
-                        placeholder="可选"
+                        placeholder="未配置 Admin Auth 时用于 user_api"
                       />
                     </label>
                   </div>

@@ -2,7 +2,12 @@ import { DEFAULT_DUCK_CONFIG, DEFAULT_TEMP_MAIL_CONFIG } from "../config/default
 import { DuckAlias, DuckConfig } from "../types/duck";
 import { MailSummary } from "../types/mail";
 import { DuckProfile, ProfileMode, TempMailInboxState } from "../types/profile";
-import { TempMailConfig, TempMailInbox } from "../types/tempMail";
+import {
+  TempMailConfig,
+  TempMailInbox,
+  getTempMailConfiguredDomains,
+  normalizeTempMailDomainSelection
+} from "../types/tempMail";
 import { STORAGE_KEYS } from "./keys";
 
 type StorageValue =
@@ -174,10 +179,23 @@ function normalizeProfiles(profiles: DuckProfile[]): DuckProfile[] {
     const tempMailInboxStates = normalizeTempMailInboxStates(profile, inbox);
     const currentInboxState =
       (inbox && tempMailInboxStates.find((state) => sameInbox(state.inbox, inbox))) || null;
+    const normalizedTempMailDomains = getTempMailConfiguredDomains(
+      profile.tempMail || DEFAULT_TEMP_MAIL_CONFIG
+    );
+    const normalizedTempMail = {
+      ...DEFAULT_TEMP_MAIL_CONFIG,
+      ...profile.tempMail,
+      domains: normalizedTempMailDomains,
+      domain: normalizeTempMailDomainSelection(
+        profile.tempMail?.domain,
+        normalizedTempMailDomains
+      )
+    };
 
     return {
       ...profile,
       mode,
+      tempMail: normalizedTempMail,
       inbox,
       tempMailInboxes: normalizeTempMailInboxes(profile.tempMailInboxes, inbox),
       tempMailInboxStates,
@@ -217,7 +235,18 @@ async function migrateLegacyProfiles() {
 
   const profile = createEmptyProfile("默认 Duck");
   profile.duck = duckConfig || { ...DEFAULT_DUCK_CONFIG };
-  profile.tempMail = tempMailConfig || { ...DEFAULT_TEMP_MAIL_CONFIG };
+  const normalizedLegacyTempMailDomains = getTempMailConfiguredDomains(
+    tempMailConfig || DEFAULT_TEMP_MAIL_CONFIG
+  );
+  profile.tempMail = {
+    ...DEFAULT_TEMP_MAIL_CONFIG,
+    ...(tempMailConfig || DEFAULT_TEMP_MAIL_CONFIG),
+    domains: normalizedLegacyTempMailDomains,
+    domain: normalizeTempMailDomainSelection(
+      tempMailConfig?.domain,
+      normalizedLegacyTempMailDomains
+    )
+  };
   profile.mode = "duck";
   profile.inbox = tempMailInbox || null;
   profile.tempMailInboxes = tempMailInbox ? [tempMailInbox] : [];
